@@ -1,0 +1,23 @@
+{
+    "name": "MeshProtect.Tests",
+    "rootNamespace": "MPTest",
+    "references": [
+        "MeshProtect",
+        "MeshProtect.Editor",
+        "lilToon.Editor",
+        "MPTest.Runtime"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "LILMP_TESTS"
+    ],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

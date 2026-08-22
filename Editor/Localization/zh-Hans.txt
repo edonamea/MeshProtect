@@ -1,0 +1,99 @@
+# MeshProtect 界面文本 - 简体中文
+# 每行一条：键=文本，\n 表示换行。没有 '=' 的行是注释。
+
+enable.toggle= 上传时保护这个头像
+enable.off=已关闭——下一次上传会原样发出网格，没有任何保护。\n\n下面的密码和算法都还保留着，重新打开就回到原来的状态。
+autofix=VRChat SDK 会显示一条红色错误，说客户端将移除这种组件。这是预期行为，上传没有问题：这个组件会从 SDK 构建用的副本上摘掉，根本不会进入头像。\n\n千万不要按那条消息上的 Auto Fix。它会把这个组件从你的场景里删掉，密码和保护算法会一起消失。
+footer=保护在你按 Build & Publish 时施加。场景里的头像永远不会被修改——移除这个组件，下一次上传就是普通的。\n\n它提高扒网格的成本，但不能让扒取变得不可能，也不保护贴图。关闭了自定义着色器的观众会看到空无一物，而不是乱掉的头像。Quest 构建会自动跳过——Quest 跑不了这个着色器——所以 Quest 版原样上传、PC 版受保护，中间不需要勾选或取消任何东西。
+advanced=高级
+
+password.none=还没有密码。按下面的按钮，把六位数字抄下来，然后照常上传。
+password.generate=生成密码
+password.title=密码
+password.help=可以自己输入，也可以随机生成。一到六位，每位 1-8——8 是 VRChat 菜单一页能放下的数量。\n\n菜单永远显示六个转盘。密码更短时，后面的转盘必须保持不动：转过就退不回去，碰过的佩戴者只能重置头像重来。这是有意的——转盘因此永远不会泄露密码的长度。\n\n在 VRChat 里：Expressions → Unlock，然后逐位选择数字。VRChat 会记住它，但只在这台电脑上——把密码存放在安全的地方，否则重装后会被锁在外面。
+password.check=密码校验码
+password.id=保护 id
+password.random=随机密码
+password.new=更换保护
+password.err.empty=密码至少需要一位数字。
+password.err.toolong=最多 {0} 位；现在有 {1} 位。
+password.err.digit=第 {0} 位是 '{1}'。菜单上只有 {2}-{3}。
+password.weak.same=每一位都相同——这是别人最先尝试的组合之一。
+password.weak.run=连续递增或递减的数字是别人最先尝试的组合之一。
+password.weak.short={0} 位只有 {1} 种组合。有人逐个试菜单，大约 {2} 就能全部试完；{3} 位则需要约 12 天。送朋友的头像够用了；要卖的头像太短。
+password.weak.minutes={0} 分钟
+password.weak.hours={0} 小时
+password.weak.days={0} 天
+dialog.replace.title=更换保护？
+dialog.replace.body=这会重新生成算法：新的着色器、新的属性名、新的表情参数。\n\n你的密码保持为 {0}。想连密码一起换，用“随机密码”。\n\n密码泄露时、或把副本交给别人之前值得做一次。需要几秒钟，因为着色器族现在就编译，而不是在上传时。\n\n继续吗？
+dialog.replace.ok=更换
+dialog.cancel=取消
+
+controllers.title=你自己的动画器图层
+controllers.uptodate=已准备：{0}。这些图层会改名后上传，你自己的控制器不受影响。\n\n编辑任何一个之后，副本会自动重做——不需要记住任何事。
+controllers.stale=已过期：{0}。\n\n上传仍然可用，你改的东西也不会丢——只是那个图层会带着原名上传，直到副本跟上。这通常会自己修好；如果没有，按“重新准备”。
+controllers.notprepared=你的 Base、Gesture 和 Action 图层会带着原名上传。这是安全的，以前的每个版本也都是这样——放服装和开关的 FX 图层无论如何都会改名。\n\n准备之后这些也会改名。它会往你的工程里写入副本；你自己的控制器永远不会被修改。
+controllers.prepare=准备控制器
+controllers.prepareagain=重新准备
+controllers.remove=移除副本
+dialog.noavatar=这个物体不属于任何 VRChat 头像——它上面没有 avatar descriptor，也就没有可准备的播放层。
+progress.title=Mesh Protect
+progress.controllers=正在复制并改名这个头像的控制器…
+progress.shader=正在生成这个头像的着色器族…
+progress.grafts=正在准备非 lilToon 的着色器…
+progress.skincheck.copy=正在构建临时的受保护副本…
+progress.skincheck.measure=正在摆姿势并测量…
+
+params.title=参数名
+params.off=改名在“高级”里被整体关闭了，所以参数也保持原名。
+params.rename= 改名那些头像之外没有任何东西读取的参数
+params.expressions= 包含表情参数（OSC 和面捕会用到它们）
+params.trees= 复制存放在控制器之外的混合树
+params.objects= 改名物体，让层级不再写着 'Outfit_Swimsuit'
+params.expwarn=表情参数已包含在内。随之而来的有两件事，而且都会波及已经拥有这个头像的人：已保存的参数值会重置，因为改名后的参数就是新参数；按这些名字配置的 OSC 或面捕会失效，直到重新指向新名字。
+params.objcount=准备好的副本里替换了 {0} 个物体名。
+params.paramcount=准备好的副本里改名了 {0} 个参数。
+params.nothing=没有任何参数能在不冒险的前提下改名。报告里写着原因。
+params.reportparams=把参数报告写到控制台
+params.reportobjects=把物体报告写到控制台
+
+adv.rebuild=重建着色器
+adv.skincheck=测量蒙皮残差
+
+matinspector.family=着色器族
+matinspector.body=这个材质由 Mesh Protect 的烘焙器驱动。它生成的属性被有意隐藏：编辑其中任何一个都会让材质与烘焙好的网格失去同步，头像会毫无征兆地渲染成乱码。\n\n想让某个网格不受保护，把那个渲染器上的每一个材质都加进“忽略的材质”，或者在“目标渲染器”里只列出其他渲染器。几个材质里只忽略一个，只会让那个子网格不位移——网格仍然会被烘焙，UV6 也会写满整个网格。
+
+field.distort=位移强度
+field.distort.tip=顶点被推开的距离，按网格包围盒对角线的比例计。越大 = 被扒走的网格损坏越严重，但对关闭了着色器的观众来说也越难看。
+field.mode=模式
+field.tangents=补算缺失的切线
+field.tangents.tip=许多 VRChat 模型没有切线。TangentSpace 模式需要它，而且模式必须全头像统一（它是材质属性）。开着时，缺失的切线会在烘焙时补算；关着时，只要有一个网格没有切线，整个头像就回退到 Normal 模式。
+field.attenuate=关节处衰减
+field.attenuate.tip=逃生口，默认关闭。在多根骨骼共享顶点的地方按比例减小位移，代价是那里的保护变弱。真实头像上的测量显示还原在每个姿势下都已经精确，所以通常不需要——每次烘焙都会报告自己的蒙皮残差，只有那个数字不小时才需要打开。
+field.rigidity=衰减指数
+field.rigidity.tip=越高 = 保护在关节附近下降得越快。4 是合理的默认值。
+field.animnames=混淆动画器名称
+field.animnames.tip=把上传头像里的每个动画器图层、状态、混合树和动画剪辑改成无意义的词，让包里不再写着 'Dance' 或 'Outfit_Swimsuit'。只影响上传——你的工程不会被碰。调试构建需要可读的图层名时可以关掉。
+field.targets=目标渲染器
+field.targets.tip=要保护的渲染器。留空则保护这个物体之下所有使用可保护材质（lilToon，或解码可移植的着色器家族）的渲染器。
+field.ignored=忽略的材质
+field.ignored.tip=应该跳过的材质（眼睛、牙齿、第三方特效，任何你不在乎其网格丢失的东西）。
+field.invisible=不可见材质
+field.invisible.tip=在屏幕上什么都不改变的材质。构建在判断网格能否位移时把它们当作不存在，从而不再挡住它们共享或重绘的子网格的加密。\n\n只是不画颜色还不够。写模板缓冲或深度的材质决定着其他材质画什么，而它的几何体会跟着一起位移——蒙版落在错误的位置，损坏出现在身体或衣服上，而不是你列出的那个材质上。大多数反穿模外壳正是这样工作的；不要把它们放进来。\n\n填错的条目在头像锁定时不一定看得出来：这个工具保护的东西那时全部隐藏，杂散的蒙版没有东西可破坏。要在解锁状态下测试。
+field.output=输出文件夹
+field.output.tip=生成的网格、材质、动画和着色器相关资产的存放处。留空表示插件自己文件夹里的 Generated 文件夹，删掉插件文件夹就能移除它生成过的一切（装在 Packages/ 下的插件则回退到 Assets/_MeshProtect）。旧版本保存的组件带着它们原来用的文件夹，并继续使用它。
+
+dialog.stop.title=Mesh Protect - 什么都没保护
+dialog.stop.body=上传已停止。这个头像上没有任何东西能被保护，发出去就是网格可读、游戏里没有解锁菜单的状态。\n\n{0}修好之后再按一次 Build & Publish。{1}\n\n如果这个头像就是无法保护、而你想原样上传，另一个按钮就是干这个的——或者取消勾选 Mesh Protect Root 组件，就不会每次都被问。
+dialog.stop.report=\n\n完整原因写在：\n{0}
+dialog.stop.stop=停止上传
+dialog.stop.continue=原样上传（无保护）
+dialog.blocked.title=Mesh Protect - 上传被拦下
+dialog.blocked.body=这个头像发出去会处于损坏或未保护的状态：\n\n{0}\n\n完整列表见控制台。
+dialog.skincheck.title=Mesh Protect - 蒙皮残差
+dialog.skincheck.cantrun=无法运行：{0}
+dialog.skincheck.failed=蒙皮检查失败：\n\n{0}
+dialog.skincheck.result=最差残差：{0} mm（位移的 {1}%）\n\n{2}\n\n百分之零点几是浮点噪声。个位数的百分比说明位移在那个关节处与蒙皮相互对抗——打开“关节处衰减”，或调低“位移强度”。
+dialog.gpucheck.title=Mesh Protect - 着色器 vs C#
+dialog.gpucheck.selectavatar=先选中带有 Mesh Protect Root 的头像，并确认它已设置密码。检查针对那个头像自己生成的着色器进行。
+dialog.gpucheck.cantrun=无法运行：{0}

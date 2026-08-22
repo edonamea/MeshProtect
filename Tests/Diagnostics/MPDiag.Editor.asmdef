@@ -1,0 +1,23 @@
+{
+    "name": "MPDiag.Editor",
+    "rootNamespace": "MPDiag",
+    "references": [
+        "MeshProtect.Editor",
+        "MeshProtect",
+        "VRC.SDK3A",
+        "VRC.SDKBase"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "LILMP_TESTS"
+    ],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

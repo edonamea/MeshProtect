@@ -1,0 +1,77 @@
+MeshProtect - 利用規約 / Terms of Use
+
+Copyright (c) 2026 MeshProtect
+
+
+────────────────────────────────────────────────────────
+日本語
+────────────────────────────────────────────────────────
+
+■ できること
+
+・ご自身のアバター、またはご自身が正当な利用権をお持ちのアバターに対して、
+  本ツールを無償で使用できます。個人・法人を問いません。
+・本ツールで保護したアバターの配布・販売は自由です。商用利用に制限はなく、
+  作者への連絡やクレジット表記も必要ありません。
+・ご自身の環境に合わせて本ツールを改変して使用できます。
+
+■ できないこと
+
+・本ツール本体（スクリプト、シェーダーテンプレート、同梱ドキュメントを含む
+  配布物）の再配布、再アップロード、販売、および改変版の配布。
+・本ツールを、権利をお持ちでないアバターに対して使用すること。
+
+  ※ 本パッケージには MIT ライセンスの成果物から派生した部分が含まれます。
+    それらの部分に上記の再配布制限は適用されず、MIT ライセンスの条件に
+    従います。該当箇所と各ライセンス全文は NOTICE.md をご覧ください。
+
+■ 免責
+
+本ツールは現状有姿で提供されます。作者は、明示黙示を問わずいかなる保証も
+行わず、本ツールの利用によって生じたいかなる損害についても責任を負いません。
+
+特に以下をご理解のうえご利用ください。
+
+・本ツールはメッシュを変形させます。アップロード前に、ご自身の環境で
+  「見た目が壊れていないか」「正しく元に戻るか」を必ずご確認ください。
+・本ツールは抽出そのものを防ぐものではありません。詳細は
+  「お読みください.txt」の該当項目をご覧ください。
+・パスワードを紛失した場合、アップロード済みのアバターを元に戻す手段は
+  ありません。パスワードは必ず控えてください。
+
+
+────────────────────────────────────────────────────────
+English
+────────────────────────────────────────────────────────
+
+■ You may
+
+・Use this tool, free of charge, on avatars you own or have a valid right to
+  use. Personal and commercial use alike.
+・Distribute and sell avatars protected with this tool without restriction.
+  No credit or notification is required.
+・Modify the tool for your own use.
+
+■ You may not
+
+・Redistribute, re-upload, sell, or distribute modified versions of the tool
+  itself (scripts, shader templates and bundled documentation).
+・Use the tool on avatars you do not have the right to use.
+
+  Note: this package contains portions derived from MIT-licensed work. The
+  restriction above does not apply to those portions, which remain under the
+  MIT License. See NOTICE.md for what they are and for the full licence text.
+
+■ Disclaimer
+
+This tool is provided "as is", without warranty of any kind, express or
+implied. The author accepts no liability for any damage arising from its use.
+
+In particular:
+
+・The tool deforms your mesh. Before uploading, always verify in your own
+  environment that the avatar looks correct and restores correctly.
+・The tool does not prevent extraction. See README.md, or THREAT_MODEL.md for
+  the detail, on what it does and does not do.
+・If the password is lost, there is no way to restore an avatar that has
+  already been uploaded. Keep it somewhere safe.

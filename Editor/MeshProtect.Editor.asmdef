@@ -1,0 +1,25 @@
+{
+    "name": "MeshProtect.Editor",
+    "rootNamespace": "MeshProtect",
+    "references": [
+        "MeshProtect",
+        "lilToon.Editor"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [
+        {
+            "name": "com.vrchat.avatars",
+            "expression": "",
+            "define": "LILMP_VRCSDK3_AVATARS"
+        }
+    ],
+    "noEngineReferences": false
+}

@@ -1,0 +1,99 @@
+# MeshProtect UI strings - English (the source of truth; missing keys elsewhere fall back here)
+# One entry per line: key=text, \n is a line break. Lines without '=' are comments.
+
+enable.toggle= Protect this avatar when it is uploaded
+enable.off=OFF - the next upload ships the mesh exactly as it is here, with no protection at all.\n\nThe password and the algorithm below are kept, so switching this back on returns to where you were.
+autofix=The VRChat SDK will show a red error saying this component type will be removed by the client. That is expected, and the upload is fine: this component is taken out of the copy the SDK builds from, so it never reaches the avatar.\n\nDo NOT press Auto Fix on that message. It deletes this component from your scene, and your password and protection algorithm go with it.
+footer=Protection is applied when you press Build & Publish. Your avatar in the scene is never modified - remove this component and the next upload is a plain one.\n\nThis raises the cost of ripping the mesh; it does not make it impossible, and it does not protect textures. Viewers who have shaders disabled see nothing rather than a scrambled avatar. Quest builds are skipped automatically - Quest cannot run the shader - so the Quest upload goes out unprotected and the PC one is protected, with nothing to tick or untick between them.
+advanced=Advanced
+
+password.none=No password yet. Press the button below, write the six digits down, then upload as usual.
+password.generate=Generate Password
+password.title=Password
+password.help=Type your own or roll one. One to six digits, each 1-8 - eight is what fits on a VRChat menu page.\n\nThe menu always shows six dials. A shorter password means the last ones must be left alone: they cannot be set back once turned, so a wearer who touches one has to reset the avatar to try again. That is deliberate - it also means the dials never give away how long the password is.\n\nIn VRChat: Expressions → Unlock, then pick one digit per position. VRChat remembers it, but on this PC only - keep the password somewhere safe or you will be locked out after reinstalling.
+password.check=Password check
+password.id=Protection id
+password.random=Random Password
+password.new=New Protection
+password.err.empty=A password needs at least one digit.
+password.err.toolong=At most {0} digits; this has {1}.
+password.err.digit=Digit {0} is '{1}'. Only {2}-{3} exist on the menu.
+password.weak.same=Every digit is the same - that is one of the first things anyone tries.
+password.weak.run=A straight run of digits is one of the first things anyone tries.
+password.weak.short={0} digit(s) is {1} combinations. Somebody guessing through the menu gets through those in about {2}, against about 12 days for {3} digits. Fine for an avatar you are handing to friends; short for one you are selling.
+password.weak.minutes={0} minutes
+password.weak.hours={0} hours
+password.weak.days={0} days
+dialog.replace.title=Replace the protection?
+dialog.replace.body=This regenerates the algorithm: a new shader, new property names and new expression parameters.\n\nYour password stays {0}. Use Random Password if you want to change that too.\n\nWorth doing if the password leaked, or before handing a copy to someone else. It takes a few seconds because the shader family is compiled now rather than during the upload.\n\nContinue?
+dialog.replace.ok=Replace
+dialog.cancel=Cancel
+
+controllers.title=Your own animator layers
+controllers.uptodate=Prepared: {0}. These layers ship renamed, and your own controllers are untouched.\n\nEdit any of them and the copies are remade for you - there is nothing to remember.
+controllers.stale=Out of date: {0}.\n\nUploading still works, and nothing you changed goes missing - that layer just ships with its original names until the copy catches up. This normally fixes itself; press Prepare Again if it has not.
+controllers.notprepared=Your Base, Gesture and Action layers ship with their original names. That is safe and is what every release so far did - the FX layer, where outfits and toggles live, is renamed either way.\n\nPreparing them renames these too. It writes copies into your project; your own controllers are never modified.
+controllers.prepare=Prepare Controllers
+controllers.prepareagain=Prepare Again
+controllers.remove=Remove Copies
+dialog.noavatar=This object is not part of a VRChat avatar - there is no avatar descriptor above it, so there are no playable layers to prepare.
+progress.title=Mesh Protect
+progress.controllers=Copying and renaming this avatar's controllers...
+progress.shader=Generating this avatar's shader family...
+progress.grafts=Preparing shaders that are not lilToon...
+progress.skincheck.copy=Building a temporary protected copy...
+progress.skincheck.measure=Posing and measuring...
+
+params.title=Parameter names
+params.off=Renaming is switched off entirely in Advanced, so parameters keep their names as well.
+params.rename= Rename parameters nothing outside the avatar reads
+params.expressions= Include expression parameters (OSC and face tracking use these)
+params.trees= Copy blend trees stored outside the controller
+params.objects= Rename objects, so the hierarchy stops reading 'Outfit_Swimsuit'
+params.expwarn=Expression parameters are included. Two things follow, and both reach people who already have the avatar: saved values reset, because a renamed parameter is a new parameter, and any OSC or face tracking setup keyed to these names stops working until it is pointed at the new ones.
+params.objcount={0} object name(s) replaced in the prepared copies.
+params.paramcount={0} parameter(s) renamed in the prepared copies.
+params.nothing=Nothing could be renamed without risking this avatar. The report says why.
+params.reportparams=Write parameter report to the Console
+params.reportobjects=Write object report to the Console
+
+adv.rebuild=Rebuild Shader
+adv.skincheck=Measure Skinning Residual
+
+matinspector.family=Shader family
+matinspector.body=This material is driven by the Mesh Protect baker. Its generated properties are hidden on purpose: editing any of them desynchronises the material from its baked mesh, and the avatar renders scrambled with no obvious cause.\n\nTo leave a mesh unprotected, add EVERY material on that renderer to Ignored Materials, or list the other renderers in Target Renderers. Ignoring one material of several only leaves that sub-mesh undisplaced - the mesh is still baked, and UV6 is written across all of it.
+
+field.distort=Distort Ratio
+field.distort.tip=How far vertices are pushed, as a fraction of the mesh bounding box diagonal. Larger = more damage to a ripped mesh, but also uglier for viewers who have shaders turned off.
+field.mode=Mode
+field.tangents=Recalculate Missing Tangents
+field.tangents.tip=Many VRChat models ship without tangents. TangentSpace mode needs them, and the mode has to be uniform across the avatar because it is a material property. With this on, missing tangents are recalculated during the bake. With it off, an avatar containing any mesh without tangents falls back to Normal mode as a whole.
+field.attenuate=Attenuate At Joints
+field.attenuate.tip=Escape hatch, off by default. Scales displacement down where several bones share a vertex, at the cost of protection there. Measurement on a real avatar showed the restore is already exact at every pose, so this is not normally needed - every bake reports its own skinning residual, so turn this on only if that number is not tiny.
+field.rigidity=Rigidity Exponent
+field.rigidity.tip=Higher = protection falls off faster near joints. 4 is a reasonable default.
+field.animnames=Obfuscate Animator Names
+field.animnames.tip=Rename every animator layer, state, blend tree and animation clip in the uploaded avatar to meaningless words, so the bundle no longer says 'Dance' or 'Outfit_Swimsuit'. Only the upload is affected - your project is not touched. Turn it off if you need readable layer names while debugging a build.
+field.targets=Target Renderers
+field.targets.tip=Renderers to protect. Leave empty to protect every renderer under this object that uses a material this tool can protect - lilToon, or a shader family the decode can be grafted onto.
+field.ignored=Ignored Materials
+field.ignored.tip=Materials that should be skipped (eyes, teeth, third party effects, anything whose mesh you do not mind losing).
+field.invisible=Invisible Materials
+field.invisible.tip=Materials that change NOTHING on screen. The build treats them as absent when deciding whether a mesh may be displaced, so they stop blocking the encryption of sub-meshes they share or re-draw.\n\nDrawing no colour is NOT enough. A material that writes stencil or depth decides what OTHER materials draw, and its geometry is displaced along with everything else - so the mask lands in the wrong place and the damage shows up on the body or the clothes, not on the material you listed. Most anti-clip shells work exactly this way; do NOT list one.\n\nA wrong entry does not necessarily show itself while the avatar is locked: everything this tool protects is hidden then, so there is nothing for a stray mask to spoil. Test unlocked.
+field.output=Output Folder
+field.output.tip=Where generated meshes, materials, animations and the shader-facing assets go. Empty means a Generated folder inside the plugin's own folder, so deleting the plugin folder removes everything it ever made (a plugin installed under Packages/ falls back to Assets/_MeshProtect instead). Components saved by older versions carry the folder they were already using and keep it.
+
+dialog.stop.title=Mesh Protect - nothing was protected
+dialog.stop.body=The upload has been STOPPED. Nothing on this avatar could be protected, so it would have gone out with the mesh readable and no unlock menu in game.\n\n{0}Fix that and press Build & Publish again.{1}\n\nIf this avatar cannot be protected and you want to upload it as it is, the other button does that - or untick the Mesh Protect Root component to stop being asked every time.
+dialog.stop.report=\n\nThe full reason is written to:\n{0}
+dialog.stop.stop=Stop the upload
+dialog.stop.continue=Upload it unprotected
+dialog.blocked.title=Mesh Protect - upload blocked
+dialog.blocked.body=This avatar would have shipped in a broken or unprotected state:\n\n{0}\n\nSee the Console for the full list.
+dialog.skincheck.title=Mesh Protect - skinning residual
+dialog.skincheck.cantrun=Could not run: {0}
+dialog.skincheck.failed=Skinning check failed:\n\n{0}
+dialog.skincheck.result=Worst residual: {0} mm ({1}% of the displacement)\n\n{2}\n\nA fraction of a percent is floating point noise. Percentages in the single digits mean the displacement is fighting the skinning at that joint - turn on Attenuate At Joints, or lower Distort Ratio.
+dialog.gpucheck.title=Mesh Protect - shader vs C#
+dialog.gpucheck.selectavatar=Select the avatar carrying Mesh Protect Root first, and make sure it has a password. The check runs against that avatar's own generated shader.
+dialog.gpucheck.cantrun=Could not run: {0}

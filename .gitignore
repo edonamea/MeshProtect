@@ -1,0 +1,29 @@
+# Unity leftovers, in case the package is cloned into a project
+*.csproj
+*.sln
+*.userprefs
+Library/
+Temp/
+Logs/
+obj/
+.vs/
+.idea/
+
+# Generated at run time, never committed. Generated/ is what the tool writes into its
+# own folder once it is installed in an avatar project, so a clone into Assets/ fills
+# up with it otherwise.
+Generated/
+last-upload.txt
+generated.txt
+graft.txt
+*-result.txt
+*.log
+
+# Working notes, not part of the tool. The packager walks the whole folder rather than
+# asking git, so anything here that is not a shipped asset has to be listed in its exclusions
+# too - it refuses to build on a file with no .meta, which is what caught these.
+HANDOFF-*.md
+KANNA-FINDINGS.md
+
+# Editor and assistant scratch
+.claude/

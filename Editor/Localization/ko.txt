@@ -1,0 +1,99 @@
+# MeshProtect UI 텍스트 - 한국어
+# 한 줄에 한 항목: 키=텍스트, \n 은 줄바꿈. '=' 가 없는 줄은 주석.
+
+enable.toggle= 업로드 시 이 아바타를 보호
+enable.off=꺼짐——다음 업로드는 메시를 지금 이대로, 아무 보호 없이 내보냅니다.\n\n아래의 비밀번호와 알고리즘은 그대로 유지되므로, 다시 켜면 원래 상태로 돌아옵니다.
+autofix=VRChat SDK 는 이 컴포넌트가 클라이언트에서 제거될 것이라는 빨간 오류를 표시합니다. 이는 예상된 동작이며 업로드에는 문제가 없습니다: 이 컴포넌트는 SDK 가 빌드에 사용하는 복사본에서 제거되어 아바타에 전혀 포함되지 않습니다.\n\n그 메시지의 Auto Fix 는 절대 누르지 마세요. 씬에서 이 컴포넌트가 삭제되며, 비밀번호와 보호 알고리즘도 함께 사라집니다.
+footer=보호는 Build & Publish 를 누를 때 적용됩니다. 씬의 아바타는 절대 수정되지 않습니다——이 컴포넌트를 제거하면 다음 업로드는 일반 업로드가 됩니다.\n\n이 도구는 메시 추출 비용을 높일 뿐, 불가능하게 만들지는 않으며 텍스처는 보호하지 않습니다. 셰이더를 꺼 둔 관객에게는 깨진 아바타 대신 아무것도 보이지 않습니다. Quest 빌드는 자동으로 건너뜁니다——Quest 는 이 셰이더를 실행할 수 없기 때문입니다——따라서 Quest 판은 보호 없이, PC 판은 보호되어 올라가며, 그 사이에 체크하거나 해제할 것은 없습니다.
+advanced=고급
+
+password.none=아직 비밀번호가 없습니다. 아래 버튼을 누르고 여섯 자리를 적어 둔 다음, 평소처럼 업로드하세요.
+password.generate=비밀번호 생성
+password.title=비밀번호
+password.help=직접 입력하거나 무작위로 생성하세요. 1~6자리, 각 자리는 1-8——8은 VRChat 메뉴 한 페이지에 들어가는 수입니다.\n\n메뉴에는 항상 여섯 개의 다이얼이 표시됩니다. 비밀번호가 짧으면 나머지 다이얼은 건드리지 말아야 합니다: 한 번 돌리면 되돌릴 수 없어, 만진 착용자는 아바타를 리셋하고 다시 시도해야 합니다. 이는 의도된 것으로, 다이얼이 비밀번호 길이를 노출하지 않게 됩니다.\n\nVRChat 에서: Expressions → Unlock 후 자리마다 숫자를 선택합니다. VRChat 이 이를 기억하지만 이 PC 에서만입니다——재설치 후 잠기지 않도록 비밀번호를 안전한 곳에 보관하세요.
+password.check=비밀번호 확인 코드
+password.id=보호 id
+password.random=무작위 비밀번호
+password.new=보호 재생성
+password.err.empty=비밀번호에는 최소 한 자리가 필요합니다.
+password.err.toolong=최대 {0}자리입니다. 지금은 {1}자리입니다.
+password.err.digit={0}번째 자리가 '{1}' 입니다. 메뉴에는 {2}-{3} 만 있습니다.
+password.weak.same=모든 자리가 같습니다——누구나 가장 먼저 시도하는 조합 중 하나입니다.
+password.weak.run=연속된 숫자는 누구나 가장 먼저 시도하는 조합 중 하나입니다.
+password.weak.short={0}자리는 {1}가지 조합입니다. 메뉴를 순서대로 시도하는 사람은 대략 {2} 만에 전부 시도합니다. {3}자리라면 약 12일입니다. 친구에게 주는 아바타라면 충분하지만, 판매할 것에는 짧습니다.
+password.weak.minutes={0}분
+password.weak.hours={0}시간
+password.weak.days={0}일
+dialog.replace.title=보호를 교체할까요?
+dialog.replace.body=알고리즘을 재생성합니다: 새 셰이더, 새 프로퍼티 이름, 새 Expression 파라미터.\n\n비밀번호는 {0} 그대로 유지됩니다. 비밀번호도 바꾸려면 "무작위 비밀번호"를 사용하세요.\n\n비밀번호가 유출되었을 때, 또는 복사본을 다른 사람에게 넘기기 전에 할 만합니다. 셰이더 패밀리를 업로드 시가 아니라 지금 컴파일하므로 몇 초가 걸립니다.\n\n계속할까요?
+dialog.replace.ok=교체
+dialog.cancel=취소
+
+controllers.title=아바타 자신의 애니메이터 레이어
+controllers.uptodate=준비됨: {0}. 이 레이어들은 이름이 바뀐 채 업로드되며, 원본 컨트롤러는 건드리지 않습니다.\n\n어느 것이든 편집하면 복사본이 자동으로 다시 만들어집니다——기억할 것은 없습니다.
+controllers.stale=오래됨: {0}.\n\n업로드는 여전히 가능하고 변경한 내용이 사라지지도 않습니다——복사본이 따라잡을 때까지 그 레이어가 원래 이름으로 올라갈 뿐입니다. 보통은 저절로 고쳐집니다; 아니라면 "다시 준비"를 누르세요.
+controllers.notprepared=Base·Gesture·Action 레이어는 원래 이름 그대로 업로드됩니다. 이는 안전하며 지금까지의 모든 릴리스와 같은 동작입니다——의상과 토글이 있는 FX 레이어는 어차피 이름이 바뀝니다.\n\n준비하면 이들도 이름이 바뀝니다. 프로젝트에 복사본이 기록되지만, 원본 컨트롤러는 절대 수정되지 않습니다.
+controllers.prepare=컨트롤러 준비
+controllers.prepareagain=다시 준비
+controllers.remove=복사본 제거
+dialog.noavatar=이 오브젝트는 VRChat 아바타의 일부가 아닙니다——상위에 avatar descriptor 가 없어 준비할 플레이어블 레이어가 없습니다.
+progress.title=Mesh Protect
+progress.controllers=이 아바타의 컨트롤러를 복사하고 이름을 바꾸는 중…
+progress.shader=이 아바타의 셰이더 패밀리를 생성하는 중…
+progress.grafts=lilToon 이 아닌 셰이더를 준비하는 중…
+progress.skincheck.copy=임시 보호 복사본을 만드는 중…
+progress.skincheck.measure=포즈를 잡고 측정하는 중…
+
+params.title=파라미터 이름
+params.off=고급에서 이름 변경이 전체적으로 꺼져 있어, 파라미터도 원래 이름을 유지합니다.
+params.rename= 아바타 밖에서 읽히지 않는 파라미터의 이름 변경
+params.expressions= Expression 파라미터 포함 (OSC 와 페이스 트래킹이 사용)
+params.trees= 컨트롤러 밖에 저장된 블렌드 트리 복사
+params.objects= 오브젝트 이름 변경——하이어라키에 'Outfit_Swimsuit' 가 보이지 않도록
+params.expwarn=Expression 파라미터가 포함됩니다. 두 가지가 뒤따르며, 둘 다 이미 아바타를 가진 사람들에게도 영향을 줍니다: 저장된 값이 초기화됩니다(이름이 바뀐 파라미터는 새 파라미터이기 때문). 그리고 이 이름들로 설정된 OSC 나 페이스 트래킹은 새 이름으로 다시 연결할 때까지 동작하지 않습니다.
+params.objcount=준비된 복사본에서 오브젝트 이름 {0}개를 교체했습니다.
+params.paramcount=준비된 복사본에서 파라미터 {0}개의 이름을 바꿨습니다.
+params.nothing=이 아바타를 위험에 빠뜨리지 않고 이름을 바꿀 수 있는 것이 없었습니다. 이유는 리포트에 있습니다.
+params.reportparams=파라미터 리포트를 콘솔에 출력
+params.reportobjects=오브젝트 리포트를 콘솔에 출력
+
+adv.rebuild=셰이더 재생성
+adv.skincheck=스키닝 잔차 측정
+
+matinspector.family=셰이더 패밀리
+matinspector.body=이 머티리얼은 Mesh Protect 의 베이커가 제어합니다. 생성된 프로퍼티는 의도적으로 숨겨져 있습니다: 어느 하나라도 편집하면 머티리얼이 베이크된 메시와 동기화를 잃고, 아바타는 원인을 알 수 없이 깨져 보이게 됩니다.\n\n어떤 메시를 보호에서 빼고 싶다면, 그 렌더러의 모든 머티리얼을 "무시할 머티리얼"에 추가하거나, "대상 렌더러"에 다른 렌더러만 나열하세요. 여러 개 중 하나만 무시하면 그 서브메시가 변위하지 않게 될 뿐입니다——메시는 여전히 베이크되고 UV6 도 전체에 기록됩니다.
+
+field.distort=변위 강도
+field.distort.tip=정점을 밀어내는 거리(메시 바운딩 박스 대각선에 대한 비율). 클수록 추출된 메시의 손상이 커지지만, 셰이더를 꺼 둔 관객에게는 더 보기 흉해집니다.
+field.mode=모드
+field.tangents=누락된 탄젠트 재계산
+field.tangents.tip=많은 VRChat 모델이 탄젠트 없이 배포됩니다. TangentSpace 모드에는 탄젠트가 필요하고, 모드는 머티리얼 프로퍼티이므로 아바타 전체에서 통일되어야 합니다. 켜면 누락된 탄젠트를 베이크 시 재계산합니다. 끄면 탄젠트 없는 메시가 하나라도 있는 아바타 전체가 Normal 모드로 폴백합니다.
+field.attenuate=관절부 감쇠
+field.attenuate.tip=비상구이며 기본은 꺼짐입니다. 여러 본이 정점을 공유하는 곳에서 변위를 줄이는 대신 그곳의 보호가 약해집니다. 실제 아바타 측정에서 복원은 모든 포즈에서 이미 정확했으므로 보통은 필요 없습니다——베이크마다 스키닝 잔차가 보고되니, 그 수치가 작지 않을 때만 켜세요.
+field.rigidity=감쇠 지수
+field.rigidity.tip=높을수록 관절 근처에서 보호가 더 빨리 약해집니다. 4가 무난한 기본값입니다.
+field.animnames=애니메이터 이름 난독화
+field.animnames.tip=업로드되는 아바타의 모든 애니메이터 레이어·스테이트·블렌드 트리·애니메이션 클립을 무의미한 단어로 바꿔, 번들에 'Dance' 나 'Outfit_Swimsuit' 가 남지 않게 합니다. 업로드에만 적용되며 프로젝트는 건드리지 않습니다. 빌드 디버깅에 읽을 수 있는 레이어 이름이 필요하면 끄세요.
+field.targets=대상 렌더러
+field.targets.tip=보호할 렌더러. 비워 두면 이 오브젝트 아래에서 보호 가능한 머티리얼 (lilToon, 또는 디코드를 이식할 수 있는 셰이더 패밀리) 을 쓰는 모든 렌더러를 보호합니다.
+field.ignored=무시할 머티리얼
+field.ignored.tip=건너뛸 머티리얼(눈, 치아, 서드파티 이펙트 등 메시를 잃어도 상관없는 것).
+field.invisible=비가시 머티리얼
+field.invisible.tip=화면에서 아무것도 바꾸지 않는 머티리얼. 빌드는 메시의 변위 가능 여부를 판단할 때 이들을 없는 것으로 취급해, 이들이 공유하거나 다시 그리는 서브메시의 암호화를 막지 않게 합니다.\n\n색을 그리지 않는 것만으로는 부족합니다. 스텐실이나 깊이를 쓰는 머티리얼은 다른 머티리얼이 무엇을 그릴지 결정하며, 그 지오메트리는 다른 것과 함께 변위됩니다——마스크가 잘못된 위치에 떨어져 손상은 나열한 머티리얼이 아니라 몸이나 옷에 나타납니다. 대부분의 클리핑 방지 셸이 바로 이런 방식입니다; 목록에 넣지 마세요.\n\n잘못된 항목은 아바타가 잠긴 동안에는 드러나지 않을 수 있습니다: 이 도구가 보호하는 것은 그때 모두 숨겨져 있어, 빗나간 마스크가 망칠 것이 없기 때문입니다. 잠금 해제 상태로 테스트하세요.
+field.output=출력 폴더
+field.output.tip=생성되는 메시·머티리얼·애니메이션·셰이더 관련 에셋이 저장되는 곳. 비워 두면 플러그인 자신의 폴더 안 Generated 폴더를 뜻하며, 플러그인 폴더를 지우면 생성물이 모두 함께 제거됩니다(Packages/ 아래에 설치된 플러그인은 Assets/_MeshProtect 로 폴백). 구버전에서 저장된 컴포넌트는 쓰던 폴더를 그대로 계속 사용합니다.
+
+dialog.stop.title=Mesh Protect - 아무것도 보호되지 않았습니다
+dialog.stop.body=업로드가 중지되었습니다. 이 아바타에서는 아무것도 보호할 수 없어, 그대로 내보내면 메시를 읽을 수 있고 게임 내 잠금 해제 메뉴도 없는 상태가 됩니다.\n\n{0}수정한 뒤 Build & Publish 를 다시 누르세요.{1}\n\n이 아바타가 보호될 수 없는 것이고 그대로 업로드하고 싶다면, 다른 버튼이 그 역할입니다——매번 묻지 않게 하려면 Mesh Protect Root 컴포넌트의 체크를 해제하세요.
+dialog.stop.report=\n\n자세한 이유는 다음에 기록되어 있습니다:\n{0}
+dialog.stop.stop=업로드 중지
+dialog.stop.continue=보호 없이 업로드
+dialog.blocked.title=Mesh Protect - 업로드 차단됨
+dialog.blocked.body=이 아바타는 손상되었거나 보호되지 않은 상태로 나갈 뻔했습니다:\n\n{0}\n\n전체 목록은 콘솔을 확인하세요.
+dialog.skincheck.title=Mesh Protect - 스키닝 잔차
+dialog.skincheck.cantrun=실행할 수 없습니다: {0}
+dialog.skincheck.failed=스키닝 검사 실패:\n\n{0}
+dialog.skincheck.result=최대 잔차: {0} mm (변위의 {1}%)\n\n{2}\n\n1% 미만의 소수는 부동소수점 노이즈입니다. 한 자릿수 퍼센트는 그 관절에서 변위가 스키닝과 충돌하고 있다는 뜻입니다——"관절부 감쇠"를 켜거나 "변위 강도"를 낮추세요.
+dialog.gpucheck.title=Mesh Protect - 셰이더 vs C#
+dialog.gpucheck.selectavatar=먼저 Mesh Protect Root 가 붙은 아바타를 선택하고, 비밀번호가 설정되어 있는지 확인하세요. 검사는 그 아바타 자신의 생성 셰이더에 대해 실행됩니다.
+dialog.gpucheck.cantrun=실행할 수 없습니다: {0}
