@@ -65,6 +65,7 @@ Unity 2022.3 · VRChat Avatar SDK3 · lilToon 2.x · PC 版模型
 |---|---|
 | **lilToon 2.x** | 原生支持。走的是 lilToon 官方的扩展点，没有 fork 也没有打补丁，所以 lilToon 更新不会把它弄坏。 |
 | **Poiyomi Toon** · **Xiexe's Toon Shader** · **UnityChanToonShader** · **Sunao Shader** · **GTAvaToon** · **blackbody** | 自动移植：把生成的解码逐个 pass 复制到它们 shader 的副本上，靠语义定位，而不是照着文本打补丁。 |
+| **lilSSAO** · **lilSSRT** | 合并族：两者都是 lilToon 的自定义 shader 家族，所以是把它们整个文件夹复制到头像的生成目录，再把解码合并进去。宿主 shader 文件夹的一份副本会和生成族一起留在你的工程里。 |
 
 移植没法完整覆盖的材质会**不加保护原样发出**并在控制台点名，而不是被弄坏。支持列表之外的
 shader 完全不碰 —— 不会损坏。

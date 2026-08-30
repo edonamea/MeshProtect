@@ -207,6 +207,17 @@ namespace MeshProtect
                     ". Press 'Rebuild Shader' on the Mesh Protect Root component and upload again.");
             }
 
+            var missingHosts = MeshProtectLilHost.MissingMerged(settings, variant, avatar);
+            if (missingHosts.Count > 0)
+            {
+                report.warnings.Add(
+                    $"{missingHosts.Count} lilToon custom family(ies) on this avatar have no " +
+                    "prepared merged copy carrying the decode, so every material using them ships " +
+                    "UNPROTECTED: " + string.Join(", ", missingHosts.Take(5)) +
+                    (missingHosts.Count > 5 ? ", ..." : "") +
+                    ". Press 'Rebuild Shader' on the Mesh Protect Root component and upload again.");
+            }
+
             WarnAboutInvisibleMaterialsThatAreNot(settings, report);
 
             // Verify the GENERATED HLSL against the C# cipher before baking anything against it.
@@ -1596,6 +1607,20 @@ namespace MeshProtect
 
             if (skinned != null) skinned.sharedMesh = baked;
             else if (filter != null) filter.sharedMesh = baked;
+
+            // Motion vectors would betray the mesh - not to rippers, to motion blur. Unity draws
+            // per-object motion vectors with its own internal replacement shader, which never sees
+            // this family's vertex code, so it rasterises the RAW ENCRYPTED buffer. In any world
+            // that consumes motion vectors (post-process motion blur, TAA), that scattered ±8cm
+            // shell smears into visible flicker noise on and around the avatar. Measured: with the
+            // default Object mode, 49% of the motion-vector buffer differs from an unprotected
+            // avatar's; with Camera mode, 0 pixels differ - the per-object pass is simply never
+            // drawn, and the avatar picks up whole-screen camera motion instead. The cost is that
+            // the wearer's own limbs no longer contribute per-object blur, which is the correct
+            // trade: the alternative (ForceNoMotion) still rasterises the encrypted silhouette.
+            // Locked avatars stop writing per-object vectors too - measured identical to an
+            // unprotected baseline. This runs on the build clone only, like everything here.
+            renderer.motionVectorGenerationMode = MotionVectorGenerationMode.Camera;
         }
 
         /// <summary>
@@ -1785,6 +1810,12 @@ namespace MeshProtect
                     $"('{source.shader.name}') and was left alone.");
                 return null;
             }
+
+            // A lilToon custom family this tool knows how to merge with - lilSSAO, lilSSRT.
+            // Checked before everything below, because lilSSAO's shader name begins "lilToon/"
+            // and would otherwise be taken for stock and converted with its effect dropped.
+            if (MeshProtectLilHost.HostFor(source.shader) != null)
+                return ConvertHostMaterial(source, settings, variant, macValue, folder, report);
 
             bool looksLikeLilToon = source.shader.name.Contains("lilToon")
                                     || source.shader.name.Contains("lts")
@@ -1982,6 +2013,77 @@ namespace MeshProtect
         /// a version whose shape this tool has not been taught - which is not a defect anywhere,
         /// just a limit - so it says so plainly and leaves the sub-mesh alone.
         /// </summary>
+        /// <summary>
+        /// A material on lilSSAO or lilSSRT, moved onto the merged family built for that host.
+        /// The merged family is their folder with the decode added, so every property they set
+        /// carries across by name and their own effect keeps working.
+        /// </summary>
+        private static Material ConvertHostMaterial(Material source, MeshProtectRoot settings,
+                                                    MeshProtectVariant variant, uint macValue,
+                                                    string folder, Report report)
+        {
+            var host = MeshProtectLilHost.HostFor(source.shader);
+            var merged = MeshProtectLilHost.FindMerged(settings, variant, source.shader,
+                                                       out string why);
+            if (merged == null)
+            {
+                report.warnings.Add(
+                    $"Material '{source.name}' uses '{source.shader.name}' and was left " +
+                    $"unprotected: {why}. Its vertices are left where they are, so nothing is " +
+                    "broken - that sub-mesh simply ships readable.");
+                return null;
+            }
+
+            var copy = new Material(source) { name = GeneratedName(source.name, variant) };
+            string path = AssetDatabase.GenerateUniqueAssetPath($"{folder}/{copy.name}.mat");
+            AssetDatabase.CreateAsset(copy, path);
+
+            // Straight across to the same shader in the merged family: it was built from the
+            // host's containers, so every name matches but the family segment. Assigning the
+            // shader after the copy is what preserves the host's property values.
+            var target = MeshProtectLilHost.MergedShaderFor(variant, host, source.shader);
+            if (target != null) copy.shader = target;
+
+            if (target == null || !IsProtectShader(copy, variant.shaderName))
+            {
+                string stayedOn = copy.shader == null ? "<null>" : copy.shader.name;
+                AssetDatabase.DeleteAsset(path);
+
+                bool tessellating = source.shader != null
+                                    && MeshProtectLilHost.IsTessellating(source.shader.name);
+                report.warnings.Add(tessellating
+                    ? $"'{source.name}' is on a tessellating variant of '{host.family}'. " +
+                      "Tessellation subdivides the mesh on the GPU, and the vertices it invents " +
+                      "did not exist when this was baked - they would be pushed somewhere " +
+                      "arbitrary and the surface would shimmer even with the right password. " +
+                      "That sub-mesh ships UNPROTECTED and intact. Switching this material off " +
+                      "tessellation - the rendering mode, or the AO evaluation path - lets it be " +
+                      "protected."
+                    : $"'{source.name}' could not be moved onto the merged '{host.family}' family - " +
+                      $"it stayed on '{stayedOn}', so that sub-mesh ships UNPROTECTED. Its vertices " +
+                      "are left where they are. The merged family is missing a shader it should " +
+                      "have, which usually means this project's lilToon and that product are " +
+                      "versions that do not match: press 'Rebuild Shader' on the Mesh Protect Root " +
+                      "component, watch the Console for a shader compile error, then upload again.");
+                return null;
+            }
+
+            // Custom shaders off means VRChat's fallback, which does not run the decode: the
+            // host's own fallback tag would draw the displaced mesh as noise at exactly the
+            // people who asked not to render it.
+            copy.SetOverrideTag("VRCFallback", "Hidden");
+
+            copy.SetFloat(variant.bypassProperty, 0f);
+
+            // The shipped material must never carry the answer; zero is the locked state.
+            foreach (var digitProperty in variant.digitProperties)
+                copy.SetFloat(digitProperty, 0f);
+
+            copy.SetVector(variant.macProperty, MeshProtectCipher.MacToVector(macValue));
+
+            return copy;
+        }
+
         private static Material ConvertForeignMaterial(Material source, MeshProtectRoot settings,
                                                        MeshProtectVariant variant, uint macValue,
                                                        string folder, Report report)
@@ -2044,7 +2146,8 @@ namespace MeshProtect
         public static bool IsProtectShader(Material material, string family)
         {
             return MeshProtectInspector.IsFamily(material, family)
-                || MeshProtectForeignShader.IsGraftedFamily(material, family);
+                || MeshProtectForeignShader.IsGraftedFamily(material, family)
+                || MeshProtectLilHost.IsMergedFamily(material, family);
         }
 
         // ------------------------------------------------------------------ misc
@@ -2095,20 +2198,30 @@ namespace MeshProtect
         }
 
         /// <summary>
-        /// Could this material end up carrying the decode - lilToon, or a family the graft claims?
+        /// Could this material end up carrying the decode - lilToon, a host family this merges
+        /// with, or a family the graft claims?
         ///
         /// Only a first pass. Whether it actually can is settled per material in ConvertMaterial,
         /// which has the shader source in front of it; this decides which renderers are worth
         /// looking at when the author has not listed any. Answering "no" here is the expensive
         /// mistake: the renderer is never considered again, and it ships unprotected with no
         /// warning naming it, because nothing ever picked it up to warn about.
+        ///
+        /// The host clause is not covered by the first two, which is what made that mistake real.
+        /// A host family names itself whatever it likes - lilSSAO calls itself "lilToon/lilSSAO"
+        /// and answers the name test by accident, but lilSSRT is plain "lilSSRT" - so it leans on
+        /// _LightMinLimit, and every lilToon property set declares that except one:
+        /// DefaultFakeShadow. lilSSRT's "[Optional] FakeShadow" variants therefore failed all
+        /// three clauses and were dropped here, silently, leaving a shadow plane drawn under an
+        /// avatar the decode had otherwise hidden.
         /// </summary>
-        private static bool CanCarryTheDecode(Material material)
+        public static bool CanCarryTheDecode(Material material)
         {
             if (material == null || material.shader == null) return false;
 
             return material.shader.name.Contains("lilToon")
                 || material.HasProperty("_LightMinLimit")
+                || MeshProtectLilHost.HostFor(material.shader) != null
                 || MeshProtectForeignShader.RecipeFor(material.shader) != null;
         }
 

@@ -21,6 +21,7 @@ namespace MPTest
             int failed = 0;
 
             failed += Report("LocalizationTest",     LocalizationTest.RunCore());
+            failed += Report("LilHostTest",         LilHostTest.RunCore());
             failed += Report("EndToEndTest",         EndToEndTest.RunCore());
             failed += Report("MeshProtectBatchTest", MeshProtectBatchTest.RunAllCore());
             failed += Report("UnlockChainTest",      UnlockChainTest.RunCore());

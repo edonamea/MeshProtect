@@ -701,8 +701,28 @@ namespace MeshProtect
                 EditorUtility.DisplayProgressBar(MeshProtectL10n.Tr("progress.title"),
                     MeshProtectL10n.Tr("progress.grafts"), 0.5f);
 
+                // The avatar, not the component's own object. The build hook finds this component
+                // with GetComponentInChildren, so putting it on a child is a supported placement -
+                // and every other look-up in this editor resolves the descriptor rather than
+                // assuming. Passing the child made Rebuild Shader survey a fraction of the avatar
+                // while the build asked about all of it, so it reported success and the build then
+                // named materials the button had never looked at.
+                GameObject owner = settings.gameObject;
+#if LILMP_VRCSDK3_AVATARS
+                var descriptor =
+                    settings.GetComponentInParent<VRC.SDK3.Avatars.Components.VRCAvatarDescriptor>(true);
+                if (descriptor != null) owner = descriptor.gameObject;
+#endif
                 MeshProtectForeignShader.EnsureAllGrafts(
-                    settings, settings.variant, settings.gameObject, problems, force);
+                    settings, settings.variant, owner, problems, force);
+
+                // Both caches are per-session and this button exists because something changed:
+                // a host installed, updated or removed since the last scan must be seen now.
+                // Same `owner` as the grafts - the merged families are surveyed over the whole
+                // avatar, not over whichever object the component happens to sit on.
+                MeshProtectLilHost.Forget();
+                MeshProtectLilHost.EnsureAllMerged(
+                    settings, settings.variant, owner, problems, force);
             }
             finally
             {

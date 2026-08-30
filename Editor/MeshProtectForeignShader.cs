@@ -306,16 +306,63 @@ namespace MeshProtect
             if (avatar == null) return found;
 
             var seen = new HashSet<Shader>();
-            foreach (var renderer in avatar.GetComponentsInChildren<Renderer>(true))
-            foreach (var material in renderer.sharedMaterials)
+            void Consider(Material material)
             {
-                if (material == null || material.shader == null) continue;
-                if (RecipeFor(material.shader) == null) continue;
-                if (IsGraftedFamily(material, variant.shaderName)) continue;
+                if (material == null || material.shader == null) return;
+                if (RecipeFor(material.shader) == null) return;
+                if (IsGraftedFamily(material, variant.shaderName)) return;
                 if (seen.Add(material.shader)) found.Add(material.shader);
             }
+
+            foreach (var renderer in avatar.GetComponentsInChildren<Renderer>(true))
+            foreach (var material in renderer.sharedMaterials)
+                Consider(material);
+
+            // A material can reach the avatar through a wardrobe toggle alone, never sitting in a
+            // renderer's slot in the scene. RewriteClipMaterials converts those too, so a foreign
+            // one there needs a graft like any other - but this survey walked renderers only, so
+            // none was ever prepared: the material shipped unprotected, and the warning naming it
+            // sent the author to 'Rebuild Shader', which looks in this same place and would not
+            // have found it either.
+#if LILMP_VRCSDK3_AVATARS
+            foreach (var clip in ClipsOn(avatar))
+            foreach (var binding in AnimationUtility.GetObjectReferenceCurveBindings(clip))
+            {
+                if (!binding.propertyName.StartsWith("m_Materials", StringComparison.Ordinal))
+                    continue;
+                // Guarded the way MeshProtectPipeline does it on the same call. The null is
+                // documented, this survey only ever produces warnings, and an exception escaping
+                // from here would surface instead as a REFUSED upload reading "Object reference
+                // not set to an instance of an object".
+                var keys = AnimationUtility.GetObjectReferenceCurve(clip, binding);
+                if (keys == null) continue;
+                foreach (var key in keys)
+                    Consider(key.value as Material);
+            }
+#endif
             return found;
         }
+
+#if LILMP_VRCSDK3_AVATARS
+        /// <summary>Every clip the avatar's own layers can play.</summary>
+        private static IEnumerable<AnimationClip> ClipsOn(GameObject avatar)
+        {
+            var descriptor =
+                avatar.GetComponentInParent<VRC.SDK3.Avatars.Components.VRCAvatarDescriptor>()
+                ?? avatar.GetComponentInChildren<VRC.SDK3.Avatars.Components.VRCAvatarDescriptor>(true);
+            if (descriptor == null) yield break;
+
+            var empty = new VRC.SDK3.Avatars.Components.VRCAvatarDescriptor.CustomAnimLayer[0];
+            foreach (var layer in (descriptor.baseAnimationLayers ?? empty)
+                                  .Concat(descriptor.specialAnimationLayers ?? empty))
+            {
+                var controller = layer.animatorController;
+                if (controller == null) continue;
+                foreach (var clip in controller.animationClips)
+                    if (clip != null) yield return clip;
+            }
+        }
+#endif
 
         // ------------------------------------------------------------------ the file set
 
@@ -1214,7 +1261,7 @@ namespace MeshProtect
             return string.IsNullOrEmpty(guid) ? sourcePath.ToLowerInvariant() : guid;
         }
 
-        private static string Token(string seed)
+        internal static string Token(string seed)
         {
             const string consonants = "bcdfghjklmnprstvwz";
             const string vowels = "aeiou";
@@ -1257,7 +1304,7 @@ namespace MeshProtect
         /// failed to compile just as happily as one that did, and a material moved onto a broken
         /// shader renders magenta rather than unprotected.
         /// </summary>
-        private static Shader FindCompiled(string name)
+        internal static Shader FindCompiled(string name)
         {
             var shader = Shader.Find(name);
             if (shader == null) return null;

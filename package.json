@@ -1,9 +1,9 @@
 {
   "name": "dev.meshprotect",
   "displayName": "MeshProtect",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "unity": "2022.3",
-  "description": "Mesh protection for VRChat avatars. Add one component, press Build & Publish. lilToon natively; Poiyomi Toon, XSToon, UTS, Sunao, GTAvaToon and blackbody by automatic grafts. Every avatar gets its own generated cipher and shader, so breaking one teaches an attacker nothing about the next.",
+  "description": "Mesh protection for VRChat avatars. Add one component, press Build & Publish. lilToon natively; Poiyomi Toon, XSToon, UTS, Sunao, GTAvaToon and blackbody by automatic grafts; lilSSAO and lilSSRT by a merged shader family. Every avatar gets its own generated cipher and shader, so breaking one teaches an attacker nothing about the next.",
   "author": { "name": "humuhumuhumu", "url": "https://humuhumuhumu.booth.pm/" },
   "documentationUrl": "https://github.com/edonamea/MeshProtect",
   "changelogUrl": "https://github.com/edonamea/MeshProtect/blob/main/CHANGELOG.md",

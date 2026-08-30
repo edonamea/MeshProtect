@@ -103,6 +103,16 @@ namespace MPTest
                 Check(material.GetTag("VRCFallback", false) == "Hidden", "e2e/fallback-hidden",
                       "viewers with shaders off see nothing rather than the scrambled mesh");
 
+                // Unity draws per-object motion vectors with its own internal shader, which never
+                // runs the decode - so with the default Object mode, any motion-blur or TAA world
+                // rasterises the ENCRYPTED mesh into the motion-vector buffer and smears it into
+                // flicker noise around the avatar. Camera mode skips that pass entirely; measured,
+                // it makes the buffer pixel-identical to an unprotected avatar's. This assertion
+                // is what keeps the fix from silently falling out of the bake.
+                Check(renderer.motionVectorGenerationMode == MotionVectorGenerationMode.Camera,
+                      "e2e/motion-vectors-camera-only",
+                      $"protected renderer writes no per-object motion vectors (mode {renderer.motionVectorGenerationMode})");
+
                 // The shader compares the entered key's hash against this vector. If it were never
                 // written, the property sits at its shader default and no password on earth
                 // matches: the avatar ships permanently invisible, and every other check passes.

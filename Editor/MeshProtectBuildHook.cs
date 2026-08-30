@@ -45,9 +45,22 @@ namespace MeshProtect
         {
             var settings = avatarGameObject.GetComponentInChildren<MeshProtectRoot>(true);
 
+            // Asked before the early returns below, because the case it exists for is the one that
+            // takes them. If the previous release kept the shared GUID when Unity renumbered the
+            // collision, the avatar's component is lilToonMeshProtect.MeshProtectRoot - a different
+            // type, in a different assembly - so the line above finds nothing here and the old
+            // hook, registered at the same callbackOrder, is the one that builds the avatar. That
+            // is exactly when the author most needs to be told, and it is the path where there is
+            // no report to hang the warning on.
+            bool legacy = MeshProtectLegacyInstall.Present;
+
             // No component means an unprotected avatar, which is none of our business. Protection
             // is only ever applied to the build clone, so a scene avatar never carries it.
-            if (settings == null) return true;
+            if (settings == null)
+            {
+                if (legacy) MeshProtectLegacyInstall.Warn();
+                return true;
+            }
 
             // An unticked component did nothing before, which is the opposite of what unticking a
             // component means everywhere else in Unity. The only way to upload one plain build -
@@ -62,6 +75,8 @@ namespace MeshProtect
                     "[MeshProtect] The Mesh Protect Root component is unticked, so this upload is " +
                     "NOT protected - the mesh ships exactly as it is in your project. Tick it again " +
                     "before uploading anything you meant to protect.");
+
+                if (legacy) MeshProtectLegacyInstall.Warn();
 
                 // Still strip it. VRChat refuses to upload an avatar carrying a component type it
                 // does not know, so leaving it behind turned "skip protection" into "cannot upload
@@ -80,6 +95,12 @@ namespace MeshProtect
             // return it, which meant a build that stopped partway threw away every warning it had
             // collected on the way - including the ones that explain the failure.
             var report = new MeshProtectPipeline.Report();
+
+            // On this path there IS a report, so it goes through that instead of straight to the
+            // console: Drain logs it once, and it also reaches last-upload.txt, which is the copy
+            // the author can send to somebody. It is added before Apply so a build that throws
+            // part-way still carries it.
+            if (legacy) report.warnings.Add(MeshProtectLegacyInstall.Message);
 
             // The watcher remakes stale copies when a controller is imported, and a build imports
             // plenty. Preparing them in the middle of one is the single thing this whole design

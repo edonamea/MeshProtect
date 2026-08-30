@@ -68,6 +68,7 @@ Unity 2022.3 · VRChat Avatar SDK3 · lilToon 2.x · PC용 아바타
 |---|---|
 | **lilToon 2.x** | 네이티브 지원. lilToon 공식 확장 지점을 통하므로 포크도 패치도 하지 않고, lilToon 업데이트로 깨지지 않습니다. |
 | **Poiyomi Toon** · **Xiexe's Toon Shader** · **UnityChanToonShader** · **Sunao Shader** · **GTAvaToon** · **blackbody** | 자동 이식: 생성된 해제 처리를 해당 셰이더의 복사본에 패스 단위로 옮깁니다. 텍스트에 패치를 대는 것이 아니라 시맨틱으로 위치를 찾습니다. |
+| **lilSSAO** · **lilSSRT** | 병합 패밀리: 둘 다 lilToon 커스텀 셰이더 패밀리이므로, 폴더째 아바타용 생성 위치로 복제한 뒤 그곳에 해제 처리를 통합합니다. 호스트 셰이더 폴더의 사본이 생성 패밀리와 나란히 프로젝트에 남습니다. |
 
 이식을 완전히 하지 못한 머티리얼은 깨지는 대신 **보호 없이 그대로 업로드**되고 Console 에
 이름이 표시됩니다. 지원 목록 밖 셰이더는 손대지 않습니다 — 망가뜨리지 않습니다.

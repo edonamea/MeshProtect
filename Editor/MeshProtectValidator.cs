@@ -58,7 +58,8 @@ namespace MeshProtect
             {
                 issues.Add(new Issue(
                     $"'{root.name}' still has a MeshProtectRoot component. It stores the key and would " +
-                    "be uploaded with the avatar. Use the generated *_Protected copy, not the source.", true));
+                    "be uploaded with the avatar. The build strips it by itself, so reaching this " +
+                    "means something put it back after protection ran.", true));
             }
 
             if (variant == null || !variant.IsValid(MeshProtectRoot.PasswordLength))
@@ -96,7 +97,8 @@ namespace MeshProtect
                 {
                     issues.Add(new Issue(
                         $"Material '{material.name}' ships with digit {string.Join(", ", live)} " +
-                        "already set. That is part of the answer. Press 'Clear Keys On Materials'.", true));
+                        "already set. That is part of the answer. The build clears these by itself, " +
+                        "so reaching this means the material was rebuilt after the bake.", true));
                 }
 
                 // A bypassed material renders correctly without any key at all. An excluded
@@ -173,7 +175,7 @@ namespace MeshProtect
                 issues.Add(new Issue(
                     "A protected material carries an all-zero key verifier, which no password can " +
                     "match - the avatar would ship invisible to everyone including you. This usually " +
-                    "usually means the material did not come through this tool's conversion - " +
+                    "means the material did not come through this tool's conversion - " +
                     "something copied or rebuilt it after the bake. Re-bake the avatar.", true));
             }
             else if (verifiers.Distinct().Count() > 1)

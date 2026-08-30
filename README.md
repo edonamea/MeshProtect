@@ -6,7 +6,7 @@
 
 [![Unity 2022.3](https://img.shields.io/badge/Unity-2022.3-222222?style=flat-square&logo=unity&logoColor=white)](https://unity.com/)
 [![VRChat Avatar SDK3](https://img.shields.io/badge/VRChat-Avatar%20SDK3-00acc1?style=flat-square)](https://vrchat.com/)
-[![lilToon and 6 more](https://img.shields.io/badge/lilToon-and%206%20more-e91e63?style=flat-square)](#shader-support)
+[![lilToon and 8 more](https://img.shields.io/badge/lilToon-and%208%20more-e91e63?style=flat-square)](#shader-support)
 [![BOOTH](https://img.shields.io/badge/BOOTH-free-fc4d50?style=flat-square)](https://humuhumuhumu.booth.pm/items/8731588)
 [![License](https://img.shields.io/badge/license-source--available-607d8b?style=flat-square)](LICENSE)
 
@@ -69,6 +69,7 @@ nothing to toggle between the two builds.
 |---|---|
 | **lilToon 2.x** | Native, through lilToon's official extension point. Nothing is forked or patched, so a lilToon update cannot break it. |
 | **Poiyomi Toon** · **Xiexe's Toon Shader** · **UnityChanToonShader** · **Sunao Shader** · **GTAvaToon** · **blackbody** | Automatic graft: the decode is copied onto their shader, pass by pass, located by semantic rather than by patching against text. |
+| **lilSSAO** · **lilSSRT** | Merged family: they are lilToon custom shader families, so their folder is copied into the avatar's generated output and the decode is merged in. A copy of the host's shader folder therefore lives in your project alongside the generated family. |
 
 A material the graft cannot cover in full ships unprotected and named in the Console, rather than
 broken. Anything on a shader outside that list is left exactly as it was — never damaged.
