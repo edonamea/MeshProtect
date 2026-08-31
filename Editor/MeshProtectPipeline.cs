@@ -1924,6 +1924,47 @@ namespace MeshProtect
                 return null;
             }
 
+            // A tessellating slot on a family older than the decode that can handle one.
+            //
+            // The ten Hidden/<family>/Tessellation/* shaders decode in vertTess, before the
+            // tessellator runs. A family generated before that decoded in vert(), which the domain
+            // shader calls on interpolated appdata - and vertex identity is the raw bit pattern of
+            // UV0, so every vertex the tessellator invents carries an identity that never existed
+            // and lands somewhere arbitrary. Right password, broken surface.
+            //
+            // Nothing else in this build can see it. The family is COMPLETE - the old containers
+            // all compiled and there are as many of them as ever - so FamilyIsComplete passes it;
+            // the GPU check compiles a probe with no tessellation stage; and the build never
+            // regenerates, deliberately - importing shaders mid-upload would force an
+            // AssetDatabase refresh inside the SDK build; see the note above the family lookup.
+            // The marker is what knows, and this is the one place that asks.
+            //
+            // Refused rather than warned about, because what a warning would let through is not an
+            // unprotected sub-mesh but a broken one. Left alone it ships unprotected and
+            // undisplaced - which is exactly what this tool already tells authors happens to a
+            // tessellating material, over in ConvertHostMaterial.
+            //
+            // Read off the CONVERTED shader on purpose: "Hidden/<family>/Tessellation/..." is a
+            // name this package emits. Stock lilToon calls the same thing
+            // "Hidden/lilToonTessellation", which IsTessellating does not match and need not.
+            if (MeshProtectLilHost.IsTessellating(copy.shader.name) &&
+                !MeshProtectShaderGen.FamilyIsCurrent(settings, variant))
+            {
+                AssetDatabase.DeleteAsset(path);
+                report.warnings.Add(
+                    $"'{source.name}' is a tessellating lilToon material, and this avatar's " +
+                    $"shader family '{variant.shaderName}' is not the one this version of the " +
+                    "tool generates - either it predates this version, or its generated folder is " +
+                    "incomplete or was never written. Only the current family decodes a " +
+                    "tessellated surface early enough; on any other one the vertices tessellation " +
+                    "invents get pushed somewhere arbitrary and the surface breaks up even with " +
+                    "the right password. That sub-mesh ships UNPROTECTED and intact instead. " +
+                    "Press 'Rebuild Shader', under 'Advanced' on the Mesh Protect Root " +
+                    "component, and upload again - if the Console reports a shader compile error, " +
+                    "that is the cause and fixing it clears this too.");
+                return null;
+            }
+
             // Viewers who have custom shaders switched off - safety settings, performance rank
             // blocking - get VRChat's fallback shader, which does not run the decode. Without this
             // tag they would see the scrambled mesh: a cloud of noise, for people who explicitly

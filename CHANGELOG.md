@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.2.0
+
+- **lilToon's Tessellation is protected properly now.** A material with Tessellation switched on
+  used to break up in-world even with the right password: the decode ran in the stage the domain
+  shader calls, after the tessellator had already invented vertices from an interpolated identity.
+  It now runs one stage earlier, once per original vertex, before the tessellator sees the mesh -
+  measured pixel-identical to the unprotected surface, on static and skinned meshes, for the
+  Opaque, Cutout, Transparent and Outline variants. Present in every earlier version; it only
+  shows on materials that actually tessellate.
+- **Existing avatars: press 'Rebuild Shader' once** (under 'Advanced' on the Mesh Protect Root)
+  to pick the fix up - the build deliberately never regenerates a shader family on its own. Until
+  you do, a tessellating lilToon material is refused with a warning naming it and ships
+  UNPROTECTED and intact, rather than protected and broken the way earlier versions shipped it.
+  Nothing changes for materials that do not tessellate.
+- lilSSAO's and lilSSRT's tessellating variants are still refused, as in 1.1.0: their merged
+  families are built from those products' own shader containers, which is not where this fix can
+  live. Switching such a material off tessellation lets it be protected.
+
+Upgrading keeps your password, your prepared grafts and your merged host families: the shared
+signature they are cached on did not move. Only the avatar's own family needs the one rebuild.
+
 ## 1.1.0
 
 - **lilSSAO and lilSSRT are supported.** Both are lilToon custom shader families, which is the

@@ -237,9 +237,22 @@ namespace MeshProtect
             // and only then calls vert(), which is where the decode runs - and vertex identity is
             // the raw bit pattern of UV0, so an interpolated UV is a different vertex to the
             // cipher. The vertices the tessellator invents get pushed somewhere arbitrary and the
-            // surface shimmers even with the right password. Nothing in the decode can fix that:
-            // those vertices did not exist when the mesh was baked. Refusing is the honest price,
-            // the same answer the graft path gives a pass it cannot cover.
+            // surface shimmers even with the right password.
+            //
+            // A generated family answers this by decoding in vertTess instead, one stage before
+            // the tessellator - and that answer cannot be carried here, for two reasons that both
+            // have to be said, because the first one alone invites a repair that breaks things.
+            //
+            // WriteMerged emits four files into a merged family and a Post block is not one of
+            // them, so the override is simply not present. But do not "fix" that by making the
+            // merged family define LILMP_TESS_POST: a pass has ONE *LIL_SUBSHADER_INSERT_POST*
+            // marker, and in lilSSRT's AO-tessellation containers the host has already spent it on
+            // its own block, which declares its own vertTess. Define the macro there and the
+            // rename fires with nothing to restore it - #pragma vertex would name a function that
+            // no longer exists, and every one of those containers stops compiling.
+            //
+            // Refusing is the honest price, the same answer the graft path gives a pass it cannot
+            // cover.
             if (IsTessellating(name)) return null;
 
             string suffix = name.Substring(host.family.Length + 1);

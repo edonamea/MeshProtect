@@ -10,10 +10,16 @@ Shader "Hidden/*LIL_SHADER_NAME*/ltspass_tess_opaque"
         // 2 : Transparent
         #define LIL_RENDER 0
 
+        // Only these three containers request the Post block, so only these three may
+        // let the decode rename vertTess. A host product's own tessellating containers
+        // define LIL_TESSELLATION but not this.
+        #define LILMP_TESS_POST
+
         #include "custom.hlsl"
     ENDHLSL
 
     lilSubShaderInsert "lilCustomShaderInsert.lilblock"
+    lilSubShaderInsertPost "lilCustomShaderInsertPost.lilblock"
     lilSubShaderBRP "DefaultTessellation"
     lilSubShaderURP "DefaultTessellation"
     lilSubShaderHDRP "DefaultTessellation"

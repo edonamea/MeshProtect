@@ -465,6 +465,8 @@ namespace MPTest
                 TestExtraMaterialSlot(lilToon);
                 TestVouchedInvisibleExtraSlot(lilToon);
                 TestObfuscationFallback(lilToon);
+                TestStaleFamilyRefusesTessellation(lilToon, "current", false);
+                TestStaleFamilyRefusesTessellation(lilToon, "stale", true);
                 TestOverrideControllerFxLayer(lilToon, "clip-is-own-asset", false);
                 TestOverrideControllerFxLayer(lilToon, "clip-inside-controller", true);
                 TestMaterialSwapAnimation(lilToon);
@@ -1902,6 +1904,154 @@ namespace MPTest
                 foreach (var mpbuild in new[] { MeshProtectShaderGen.OutputRoot(null) + "/_MeshProtectBuild",
                                                "Assets/_MeshProtectBuild" })
                     if (AssetDatabase.IsValidFolder(mpbuild)) AssetDatabase.DeleteAsset(mpbuild);
+            }
+        }
+
+        /// <summary>
+        /// An existing avatar updates, and its family still decodes tessellation one stage late.
+        ///
+        /// Nothing regenerates a family except two manual buttons - the build deliberately never
+        /// does - and FamilyIsComplete counts shaders, so a family written by an older release
+        /// passes every preflight it meets. Left alone, a tessellating material is converted onto
+        /// it, displaced, and then decoded in the domain shader on an interpolated vertex identity
+        /// that never existed: invisible while locked, shattered when unlocked. Refused rather
+        /// than warned about, because what a warning would let through is not an unprotected
+        /// sub-mesh but a broken one.
+        ///
+        /// The avatar carries an ordinary lilToon renderer too, so the build does not end at
+        /// "nothing was protected". What is measured is a refusal scoped to one renderer, not a
+        /// refusal to build.
+        ///
+        /// Run twice, and the second arm is the one that was missing: a guard that refused
+        /// EVERYBODY would pass a stale-only test while breaking every existing tessellation user.
+        /// The "current" arm is what says the guard is precise as well as present.
+        /// </summary>
+        private static void TestStaleFamilyRefusesTessellation(Shader lilToon, string label, bool age)
+        {
+            var tess = Shader.Find("Hidden/lilToonTessellation");
+            if (tess == null)
+            {
+                Say("      (skipped stale-family/*: no Hidden/lilToonTessellation in this project)");
+                return;
+            }
+
+            GameObject root = null;
+            try
+            {
+                root = BuildMinimalAvatar(lilToon, "StaleFamilyAvatar_" + label, 8123 + label.Length,
+                                          out var plain, out var settings);
+
+                var bone = root.transform.Find("Bone");
+                var extra = new GameObject("TessBody");
+                extra.transform.SetParent(root.transform, false);
+                var smr = extra.AddComponent<SkinnedMeshRenderer>();
+                var mesh = BuildTestMesh(16);
+                var weights = new BoneWeight[mesh.vertexCount];
+                for (int i = 0; i < weights.Length; i++)
+                    weights[i] = new BoneWeight { boneIndex0 = 0, weight0 = 1f };
+                mesh.boneWeights = weights;
+                mesh.bindposes = new[] { Matrix4x4.identity };
+                smr.sharedMesh = mesh;
+                smr.bones = new[] { bone };
+                smr.rootBone = bone;
+                smr.sharedMaterials = new[] { new Material(tess) { name = "StaleTessMat" } };
+
+                // Age the marker to exactly what the previous release wrote: the same signature
+                // without the family format field this one puts in front of it.
+                string marker = Path.Combine(
+                    MeshProtectShaderGen.FolderFor(settings, settings.variant), "generated.txt");
+                if (!File.Exists(marker))
+                {
+                    Check(false, "stale-family/marker-exists", "no generated.txt to age: " + marker);
+                    return;
+                }
+                string current = File.ReadAllText(marker);
+                int semicolon = current.IndexOf(';');
+                if (age)
+                {
+                    bool agedRight = current.StartsWith("fam=") && semicolon > 0;
+                    Check(agedRight, "stale-family/marker-shape",
+                          (agedRight ? "the marker leads with the family format field, so stripping " +
+                                       "it reproduces what the previous release wrote: "
+                                     : "the marker no longer leads with the family format field, " +
+                                       "so this test ages it wrongly and proves nothing: ") +
+                          current.Substring(0, Math.Min(24, current.Length)));
+                    File.WriteAllText(marker, current.Substring(semicolon + 1));
+                }
+
+                var before = mesh.vertices;
+                bool ok = new MeshProtectBuildHook().OnPreprocessAvatar(root);
+
+                var landedTess = smr.sharedMaterials.Length > 0 ? smr.sharedMaterials[0] : null;
+                bool tessRefused = landedTess != null && landedTess.shader == tess;
+
+                var afterMesh = smr.sharedMesh;
+                var after = afterMesh == null ? new Vector3[0] : afterMesh.vertices;
+                bool undisplaced = after.Length == before.Length;
+                for (int i = 0; undisplaced && i < after.Length; i++)
+                    undisplaced = (after[i] - before[i]).sqrMagnitude < 1e-16f;
+
+                var landedPlain = plain.sharedMaterials.Length > 0 ? plain.sharedMaterials[0] : null;
+                bool plainProtected = landedPlain != null &&
+                    MeshProtectPipeline.IsProtectShader(landedPlain, settings.variant.shaderName);
+
+                if (age)
+                {
+                    Check(ok && tessRefused && undisplaced && plainProtected,
+                          "stale-family/" + label + "/tessellation-is-refused-not-shattered",
+                          !ok ? "the build STOPPED - a stale family must cost one sub-mesh, not the upload"
+                          : !tessRefused
+                              ? "the tessellating material was moved onto the family anyway, which " +
+                                "is the shattered avatar this check exists to prevent"
+                          : !undisplaced
+                              ? "refused, but its vertices had already been displaced - it ships " +
+                                "unprotected AND broken, the worst of both"
+                          : !plainProtected
+                              ? "the ordinary lilToon material did not convert either, so the " +
+                                "refusal is not scoped and this proves nothing about tessellation"
+                              : "built, tessellating sub-mesh left on its own shader and " +
+                                "undisplaced, the rest of the avatar protected");
+
+                    // The refusal is only recoverable if the author is told which button to press,
+                    // and last-upload.txt is where they read it. Asserting the behaviour without
+                    // the message would let the half that makes it survivable be deleted silently.
+                    string reportPath = MeshProtectShaderGen.OutputRoot(settings) + "/last-upload.txt";
+                    string reportText = File.Exists(reportPath) ? File.ReadAllText(reportPath) : "";
+                    bool told = reportText.Contains("StaleTessMat") &&
+                                reportText.Contains("Rebuild Shader");
+                    Check(told, "stale-family/" + label + "/the-author-is-told-which-button",
+                          told ? "last-upload.txt names the material and the button"
+                               : reportText.Length == 0
+                                   ? "no last-upload.txt at " + reportPath
+                                   : "last-upload.txt does not name both the material and " +
+                                     "'Rebuild Shader', so the refusal is unrecoverable in " +
+                                     "practice: the author sees a sub-mesh go unprotected with " +
+                                     "nothing saying it is one click away");
+                }
+                else
+                {
+                    // The other direction. A guard that refuses EVERY tessellating material would
+                    // pass the arm above and break every existing user; only this says the family
+                    // check is precise.
+                    bool tessProtected = landedTess != null &&
+                        MeshProtectPipeline.IsProtectShader(landedTess, settings.variant.shaderName);
+                    Check(ok && tessProtected && plainProtected,
+                          "stale-family/" + label + "/current-family-still-protects-tessellation",
+                          !ok ? "the build STOPPED on a family this run just generated"
+                          : !tessProtected
+                              ? "a CURRENT family refused a tessellating material - the guard is " +
+                                "firing on everybody, which breaks every avatar that uses " +
+                                "lilToon Tessellation"
+                          : !plainProtected
+                              ? "the ordinary material did not convert either, so the fixture is " +
+                                "broken and neither arm means anything"
+                              : "the tessellating material converted onto the current family, as " +
+                                "it must");
+                }
+            }
+            finally
+            {
+                if (root != null) UnityEngine.Object.DestroyImmediate(root);
             }
         }
 

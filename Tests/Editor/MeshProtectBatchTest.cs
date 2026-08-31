@@ -82,6 +82,8 @@ namespace MPTest
                     TestNewProtectionKeepsPassword();
                     TestOneClickFromTheInspector();
                     TestHalfOfTheHashIsMeasured();
+                    TestSharedEmittersArePinned();
+                    TestTessellationEmitterIsPinned();
                 }
                 finally
                 {
@@ -101,6 +103,130 @@ namespace MPTest
             File.WriteAllText(Path.Combine(Directory.GetCurrentDirectory(), "mptest-result.txt"),
                               Log.ToString());
             return exitCode;
+        }
+
+        /// <summary>
+        /// The three emitters a MERGED HOST FAMILY embeds, pinned by hash. A graft embeds only
+        /// one of them, EmitDecodeHlsl; MeshProtectForeignShader emits its own properties and its
+        /// own header, and NEITHER of those is pinned by anything - a change to them can alter
+        /// what a graft compiles while this test stays green. They are not folded in here on
+        /// purpose: this pin exists to ask one question about one shared text, and a hash covering
+        /// family-only and graft-only emitters could not be answered with a single decision.
+        ///
+        /// SharedSignatureFormat is frozen apart from GeneratorFormat so a family-only change
+        /// cannot tear down every prepared graft and merged host - which would ship those
+        /// sub-meshes readable on the first upload after an update. The price of that freeze is
+        /// that nothing invalidates them automatically any more: an edit to one of these emitters
+        /// leaves graft.txt and host.txt matching, and every graft stays frozen on the old text
+        /// while the pipeline writes material values for the new one. That is not an unprotected
+        /// sub-mesh; it is one decoded with the wrong program, and it stays that way until
+        /// somebody presses Rebuild Shader.
+        ///
+        /// So this test is the ask, and the only loud thing in the arrangement. It fails on any
+        /// change to the emitted text and the answer is one question: does the change alter what
+        /// a GRAFT compiles?
+        ///   yes - bump SharedSignatureFormat, then update the hash.
+        ///   no  - the new text is gated on something only this package's own containers define,
+        ///         the way format 3's vertTess rename is - update the hash alone.
+        /// It fails at test time and never during a build, so it cannot block anybody's upload.
+        ///
+        /// The variant is seeded, so a change to the variant GENERATOR moves the hash too. That
+        /// is not a false alarm: the signature is computed from the variant, so its inputs
+        /// changing is worth one look before the number is replaced.
+        /// </summary>
+        private static void TestSharedEmittersArePinned()
+        {
+            const string Expected = "FC96CC41A124B092526D925A616E7AF1793A3FC83DB23C25A2A89996BEE9C239";
+
+            var variant = MeshProtectVariantGenerator.Generate(new System.Random(20260831));
+            var text = new StringBuilder();
+            foreach (var name in new[] { "EmitDecodeHlsl", "EmitProperties", "EmitCustomHlsl" })
+            {
+                var method = typeof(MeshProtectShaderGen).GetMethod(
+                    name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+                if (method == null)
+                {
+                    Check(false, "signature/shared-emitters-pinned",
+                          $"MeshProtectShaderGen.{name} is gone. A merged host family embeds it; " +
+                          "whatever replaced it has to be pinned here, and SharedSignatureFormat " +
+                          "may need to move.");
+                    return;
+                }
+                text.Append(name).Append('\n')
+                    .Append((string)method.Invoke(null, new object[] { variant })).Append('\n');
+            }
+
+            string actual;
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+                actual = BitConverter.ToString(
+                    sha.ComputeHash(Encoding.UTF8.GetBytes(text.ToString()))).Replace("-", "");
+
+            Check(actual == Expected, "signature/shared-emitters-pinned",
+                  actual == Expected
+                      ? "the text grafts and merged hosts embed is unchanged"
+                      : $"the emitted text CHANGED: {actual} where {Expected} was pinned. If this " +
+                        "change alters what a GRAFT or a MERGED HOST compiles, bump " +
+                        "SharedSignatureFormat before " +
+                        "updating the number - otherwise every prepared graft and merged host " +
+                        "keeps its old decode while the pipeline writes values for the new one.");
+        }
+
+        /// <summary>
+        /// EmitTessHlsl, pinned by its own hash - deliberately NOT folded into the shared pin.
+        ///
+        /// This text goes only into the family's own custom_insert_post.hlsl. No graft and no
+        /// merged host embeds it, so a change here can never invalidate their caches and it must
+        /// not be able to drag SharedSignatureFormat with it. Two texts, two questions, two hashes.
+        ///
+        /// It exists because the suite is blind here and was measured blind: deleting
+        /// "input.uv6 = float2(0.0, 0.0);" - the one line that stops the domain shader decoding a
+        /// second time - leaves every other check in this suite passing, while the same source
+        /// renders the protected surface a metre away from the truth. A text pin cannot prove the
+        /// decode is right; only the GPU probes do that, and they are not part of this suite. What
+        /// it can do is make an edit to this text impossible to make silently, which is the way
+        /// this particular line would actually be lost.
+        ///
+        /// If it fails: look at what changed, then re-run the tessellation correctness probes
+        /// before updating the number. A green suite is not evidence about this emitter.
+        /// </summary>
+        private static void TestTessellationEmitterIsPinned()
+        {
+            const string Expected = "482345F4523C3D8B9556387BCEC461014B914C60FD5083090174827BE83CA77D";
+
+            var variant = MeshProtectVariantGenerator.Generate(new System.Random(20260831));
+            var method = typeof(MeshProtectShaderGen).GetMethod(
+                "EmitTessHlsl", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+            if (method == null)
+            {
+                Check(false, "signature/tess-emitter-pinned",
+                      "MeshProtectShaderGen.EmitTessHlsl is gone. It is the whole of tessellation " +
+                      "support; whatever replaced it has to be pinned here.");
+                return;
+            }
+
+            string text = (string)method.Invoke(null, new object[] { variant });
+            string actual;
+            using (var sha = System.Security.Cryptography.SHA256.Create())
+                actual = BitConverter.ToString(
+                    sha.ComputeHash(Encoding.UTF8.GetBytes(text))).Replace("-", "");
+
+            bool hasZeroing = text.Contains("input.uv6 = float2(0.0, 0.0);");
+            bool hasSentinel = text.Contains("return lilMPVertTessOriginal(input);");
+            Check(hasZeroing && hasSentinel, "signature/tess-emitter-keeps-its-two-load-bearing-lines",
+                  !hasZeroing
+                      ? "the uv6 zeroing is gone - the domain shader will decode a second time and " +
+                        "the surface moves, with the right password, and no other check here notices"
+                      : !hasSentinel
+                          ? "the sentinel return is gone - if lilToon renames vertTess the family " +
+                            "would silently revert to the broken decode instead of failing to compile"
+                          : "both present");
+
+            Check(actual == Expected, "signature/tess-emitter-pinned",
+                  actual == Expected
+                      ? "the tessellation override is unchanged"
+                      : $"EmitTessHlsl CHANGED: {actual} where {Expected} was pinned. Re-run the " +
+                        "tessellation correctness probes before updating this number - nothing " +
+                        "else in this suite can tell you whether the new text still decodes.");
         }
 
         // ------------------------------------------------------------------ setup
