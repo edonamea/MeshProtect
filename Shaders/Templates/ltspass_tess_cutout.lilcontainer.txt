@@ -10,9 +10,10 @@ Shader "Hidden/*LIL_SHADER_NAME*/ltspass_tess_cutout"
         // 2 : Transparent
         #define LIL_RENDER 1
 
-        // Only these three containers request the Post block, so only these three may
-        // let the decode rename vertTess. A host product's own tessellating containers
-        // define LIL_TESSELLATION but not this.
+        // Arms the vertTess rename in custom.hlsl; the Post block requested below
+        // restores it. Merged host families get the same define/Post pair from the
+        // wiring pass in MeshProtectLilHost, container by container - only a
+        // container carrying both may let the decode rename vertTess.
         #define LILMP_TESS_POST
 
         #include "custom.hlsl"

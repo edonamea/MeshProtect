@@ -55,11 +55,14 @@ namespace MeshProtect
         /// they cannot receive is the opposite of what the number is for.
         ///
         /// Format 3 is the worked example. It DID change EmitDecodeHlsl - it added the vertTess
-        /// rename - but that text is gated on LILMP_TESS_POST, which is defined in exactly three
-        /// files in this package, the same three that request our Post block. A merged host family
-        /// is built from the HOST's containers and a graft from a non-lilToon source, so neither
-        /// ever defines it: the #if is false, nothing is renamed, and the compiled result is
-        /// unchanged. Inert, so no bump.
+        /// rename, gated on LILMP_TESS_POST. Grafts never define that, so graft.txt stayed
+        /// inert. Merged host families now DO: the wiring pass in MeshProtectLilHost injects
+        /// the define into every container it verifies. Still no bump, because a stale merged
+        /// family needs no signature mismatch to be safe - without a current tess.txt,
+        /// TessWiring returns null and tessellating variants fall back to the old name-based
+        /// refusal, and TessFormat orders the re-merge that delivers the new text. A bump
+        /// would instead have shipped every lilSSAO/lilSSRT sub-mesh readable on the first
+        /// upload after the update.
         /// </summary>
         private const int SharedSignatureFormat = 2;
 
