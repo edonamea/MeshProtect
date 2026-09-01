@@ -1946,6 +1946,17 @@ namespace MPTest
                 extra.transform.SetParent(root.transform, false);
                 var smr = extra.AddComponent<SkinnedMeshRenderer>();
                 var mesh = BuildTestMesh(16);
+
+                // Two sub-meshes on ONE renderer - the realistic shape of the failure this test
+                // exists for (a face material beside body materials), and the only shape that
+                // exercises the per-slot counter: a renderer with nothing protectable is dropped
+                // whole and counted by skippedRenderers instead.
+                var allTris = mesh.GetTriangles(0);
+                int half = (allTris.Length / 6) * 3;
+                mesh.subMeshCount = 2;
+                mesh.SetTriangles(allTris.Take(half).ToArray(), 0);
+                mesh.SetTriangles(allTris.Skip(half).ToArray(), 1);
+
                 var weights = new BoneWeight[mesh.vertexCount];
                 for (int i = 0; i < weights.Length; i++)
                     weights[i] = new BoneWeight { boneIndex0 = 0, weight0 = 1f };
@@ -1954,7 +1965,12 @@ namespace MPTest
                 smr.sharedMesh = mesh;
                 smr.bones = new[] { bone };
                 smr.rootBone = bone;
-                smr.sharedMaterials = new[] { new Material(tess) { name = "StaleTessMat" } };
+                smr.sharedMaterials = new[]
+                {
+                    new Material(lilToon) { name = "TessNeighbourMat" },
+                    new Material(tess) { name = "StaleTessMat" },
+                };
+                var tessOnlyVerts = new HashSet<int>(allTris.Skip(half));
 
                 // Age the marker to exactly what the previous release wrote: the same signature
                 // without the family format field this one puts in front of it.
@@ -1982,14 +1998,25 @@ namespace MPTest
                 var before = mesh.vertices;
                 bool ok = new MeshProtectBuildHook().OnPreprocessAvatar(root);
 
-                var landedTess = smr.sharedMaterials.Length > 0 ? smr.sharedMaterials[0] : null;
+                var landedTess = smr.sharedMaterials.Length > 1 ? smr.sharedMaterials[1] : null;
                 bool tessRefused = landedTess != null && landedTess.shader == tess;
+                var landedNeighbour = smr.sharedMaterials.Length > 0 ? smr.sharedMaterials[0] : null;
+                bool neighbourProtected = landedNeighbour != null &&
+                    MeshProtectPipeline.IsProtectShader(landedNeighbour, settings.variant.shaderName);
 
+                // Undisplaced is judged on the refused sub-mesh's OWN vertices - the renderer is
+                // kept and its protected half is displaced, which is the whole point. Vertices
+                // shared across the seam are skipped with the refused side, by design.
                 var afterMesh = smr.sharedMesh;
                 var after = afterMesh == null ? new Vector3[0] : afterMesh.vertices;
                 bool undisplaced = after.Length == before.Length;
+                bool neighbourDisplaced = false;
                 for (int i = 0; undisplaced && i < after.Length; i++)
-                    undisplaced = (after[i] - before[i]).sqrMagnitude < 1e-16f;
+                {
+                    bool moved = (after[i] - before[i]).sqrMagnitude >= 1e-16f;
+                    if (tessOnlyVerts.Contains(i)) undisplaced = !moved;
+                    else if (moved) neighbourDisplaced = true;
+                }
 
                 var landedPlain = plain.sharedMaterials.Length > 0 ? plain.sharedMaterials[0] : null;
                 bool plainProtected = landedPlain != null &&
@@ -1997,7 +2024,8 @@ namespace MPTest
 
                 if (age)
                 {
-                    Check(ok && tessRefused && undisplaced && plainProtected,
+                    Check(ok && tessRefused && undisplaced && neighbourProtected &&
+                          neighbourDisplaced && plainProtected,
                           "stale-family/" + label + "/tessellation-is-refused-not-shattered",
                           !ok ? "the build STOPPED - a stale family must cost one sub-mesh, not the upload"
                           : !tessRefused
@@ -2006,11 +2034,14 @@ namespace MPTest
                           : !undisplaced
                               ? "refused, but its vertices had already been displaced - it ships " +
                                 "unprotected AND broken, the worst of both"
+                          : !neighbourProtected || !neighbourDisplaced
+                              ? "the refused slot took its NEIGHBOUR down with it - the other " +
+                                "sub-mesh on the same renderer must stay protected and displaced"
                           : !plainProtected
                               ? "the ordinary lilToon material did not convert either, so the " +
                                 "refusal is not scoped and this proves nothing about tessellation"
-                              : "built, tessellating sub-mesh left on its own shader and " +
-                                "undisplaced, the rest of the avatar protected");
+                              : "built, tessellating sub-mesh refused and undisplaced beside a " +
+                                "protected neighbour on the same renderer");
 
                     // The refusal is only recoverable if the author is told which button to press,
                     // and last-upload.txt is where they read it. Asserting the behaviour without
@@ -2019,6 +2050,17 @@ namespace MPTest
                     string reportText = File.Exists(reportPath) ? File.ReadAllText(reportPath) : "";
                     bool told = reportText.Contains("StaleTessMat") &&
                                 reportText.Contains("Rebuild Shader");
+
+                    // The refusal is per-slot on a kept renderer, which is exactly the shape the
+                    // summary line used to hide - it said "Protected N mesh(es)" with no
+                    // qualifier. The counter exists so the one line an author reads admits it.
+                    bool counted = reportText.Contains("1 sub-mesh(es) on 1 renderer(s)");
+                    Check(counted, "stale-family/" + label + "/the-summary-line-admits-it",
+                          counted ? "the summary counts the refused sub-mesh"
+                                  : "last-upload.txt's summary does not count the refused " +
+                                    "sub-mesh - the author reads \"Protected N mesh(es)\" and " +
+                                    "nothing else, which is how a readable face ships unnoticed");
+
                     Check(told, "stale-family/" + label + "/the-author-is-told-which-button",
                           told ? "last-upload.txt names the material and the button"
                                : reportText.Length == 0
@@ -2035,7 +2077,7 @@ namespace MPTest
                     // check is precise.
                     bool tessProtected = landedTess != null &&
                         MeshProtectPipeline.IsProtectShader(landedTess, settings.variant.shaderName);
-                    Check(ok && tessProtected && plainProtected,
+                    Check(ok && tessProtected && neighbourProtected && plainProtected,
                           "stale-family/" + label + "/current-family-still-protects-tessellation",
                           !ok ? "the build STOPPED on a family this run just generated"
                           : !tessProtected

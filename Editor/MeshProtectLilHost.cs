@@ -37,6 +37,27 @@ namespace MeshProtect
     {
         private const string MarkerFile = "host.txt";
 
+        /// <summary>
+        /// The tessellation wiring record, written into the merged folder by PatchTessellation.
+        /// "tessgen=1;ok" when every tessellating container was wired; "tessgen=1;deny=a,b,c"
+        /// naming the family-relative suffixes that could not be, wrappers included.
+        ///
+        /// FindMerged never reads this, ON PURPOSE: a family merged by an older version keeps
+        /// serving every material it already served, so an update never costs a working avatar
+        /// its protection. MergedShaderFor reads it to decide tessellating variants, and
+        /// EnsureMerged treats a missing or older record as "re-merge on the next Rebuild
+        /// Shader" - which is how the wiring reaches existing users.
+        /// </summary>
+        private const string TessMarkerFile = "tess.txt";
+
+        /// <summary>
+        /// Bump when the wiring changes shape; stale records re-merge, not refuse. 2: deny
+        /// entries are qualified by their sub-family segment ("GTAO/AOTessellation/Opaque"),
+        /// because MergedShaderFor compares root-relative names and an unqualified entry could
+        /// never match one - the reviewer's proof used the exact containers lilSSRT ships.
+        /// </summary>
+        private const int TessFormat = 2;
+
         /// <summary>The host's own LIL_CUSTOM_PROPERTIES, renamed so ours can chain onto it.</summary>
         private const string HostProperties = "LIL_MPHOST_PROPERTIES";
 
@@ -220,7 +241,8 @@ namespace MeshProtect
         /// "Hidden/&lt;merged&gt;/Cutout". lilToon's own converter cannot do this - it maps from
         /// stock lilToon and leaves a material that already sits on a custom family alone.
         /// </summary>
-        public static Shader MergedShaderFor(MeshProtectVariant variant, Host host, Shader source)
+        public static Shader MergedShaderFor(MeshProtectRoot settings, MeshProtectVariant variant,
+                                             Host host, Shader source)
         {
             if (host == null || source == null) return null;
 
@@ -233,29 +255,37 @@ namespace MeshProtect
             if (!name.StartsWith(host.family + "/", StringComparison.Ordinal))
                 return null;
 
-            // Tessellation of any spelling. lilToon's domain shader interpolates the appdata
-            // and only then calls vert(), which is where the decode runs - and vertex identity is
-            // the raw bit pattern of UV0, so an interpolated UV is a different vertex to the
-            // cipher. The vertices the tessellator invents get pushed somewhere arbitrary and the
-            // surface shimmers even with the right password.
-            //
-            // A generated family answers this by decoding in vertTess instead, one stage before
-            // the tessellator - and that answer cannot be carried here, for two reasons that both
-            // have to be said, because the first one alone invites a repair that breaks things.
-            //
-            // WriteMerged emits four files into a merged family and a Post block is not one of
-            // them, so the override is simply not present. But do not "fix" that by making the
-            // merged family define LILMP_TESS_POST: a pass has ONE *LIL_SUBSHADER_INSERT_POST*
-            // marker, and in lilSSRT's AO-tessellation containers the host has already spent it on
-            // its own block, which declares its own vertTess. Define the macro there and the
-            // rename fires with nothing to restore it - #pragma vertex would name a function that
-            // no longer exists, and every one of those containers stops compiling.
-            //
-            // Refusing is the honest price, the same answer the graft path gives a pass it cannot
-            // cover.
-            if (IsTessellating(name)) return null;
-
             string suffix = name.Substring(host.family.Length + 1);
+
+            // Tessellation. lilToon's domain shader interpolates the appdata and only then calls
+            // vert(), where the decode runs - and vertex identity is the raw bit pattern of UV0,
+            // so every vertex the tessellator invents would land somewhere arbitrary. The answer,
+            // same as the generated family's, is to decode in vertTess, one stage earlier; for a
+            // merged family that wiring is done by PatchTessellation on the copied containers,
+            // and whether it happened is recorded in tess.txt at merge time:
+            //
+            //   No record - the family was merged before the wiring existed. Refuse by name,
+            //   exactly as that version did; a Rebuild Shader re-merges and the record appears.
+            //   FindMerged still accepts the family for everything else, so updating this tool
+            //   never costs an already-working avatar its protection.
+            //
+            //   Record present - the deny list is authoritative, and the name test is not
+            //   consulted. The list names the variants whose containers could not be wired, and
+            //   the wrappers that ride on them, WHATEVER they are called: a tessellating
+            //   container under a name IsTessellating does not match is precisely the case a
+            //   name test would wave through shattered.
+            var denied = TessWiring(settings, variant, host);
+            if (denied == null)
+            {
+                if (IsTessellating(name)) return null;
+            }
+            else if (denied.Contains(suffix) ||
+                     (denied.Contains("*") && IsTessellating(name)))
+            {
+                // "*" is the wiring pass saying it met a failure it could not even name -
+                // degrade to the pre-record name refusal rather than trust an "ok" that is not.
+                return null;
+            }
 
             // Shader.Find hands back a shader that failed to compile just as readily as one that
             // worked, and a material moved onto a broken shader passes every name-based check on
@@ -274,9 +304,13 @@ namespace MeshProtect
             string folder = Folder(settings, variant, host);
             string signature = Signature(variant, host);
 
+            // The tess record is part of "current": a family merged before the wiring existed
+            // is complete and correct for everything it already served, but the next rebuild
+            // owes it a re-merge so its tessellating variants stop being refused.
             if (!force && File.Exists(Path.Combine(folder, MarkerFile))
                 && File.ReadAllText(Path.Combine(folder, MarkerFile)).Trim() == signature
-                && MeshProtectForeignShader.FindCompiled(FamilyName(variant, host) + "/lilToon") != null)
+                && MeshProtectForeignShader.FindCompiled(FamilyName(variant, host) + "/lilToon") != null
+                && TessRecordCurrent(folder))
                 return false;
 
             string hostReal = host.realFolder;
@@ -320,6 +354,7 @@ namespace MeshProtect
             }
 
             PatchNestedFamilies(variant, host, folder, FamilyName(variant, host));
+            PatchTessellation(variant, folder, FamilyName(variant, host));
             WriteMerged(variant, host, hostReal, folder, hostCustom);
 
             AssetDatabase.ImportAsset(folder, ImportAssetOptions.ImportRecursive |
@@ -515,6 +550,282 @@ namespace MeshProtect
 
 
         /// <summary>
+        /// Wire the vertTess decode into every tessellating container of the merged copy, and
+        /// record the outcome in tess.txt.
+        ///
+        /// The pieces were all shipped by 1.2.0; this only connects them inside a folder this
+        /// tool already owns. The merged custom_insert.hlsl carries the rename
+        /// ("#define vertTess lilMPVertTessOriginal") gated on LILMP_TESS_POST, and EmitTessHlsl
+        /// is the restore-and-override that decodes once per ORIGINAL vertex and zeroes uv6 so
+        /// the domain shader's copy of the decode early-outs. So per tessellating container:
+        /// define LILMP_TESS_POST in its HLSLINCLUDE (arming the rename), and put the override
+        /// where the pass's *LIL_SUBSHADER_INSERT_POST* will paste it - appended to the host's
+        /// own Post block where one exists (lilSSRT's AO containers, whose ssrt_tessellation.hlsl
+        /// declares the same pass-through vertTess lilToon's does, and re-defines
+        /// LIL_TESSELLATION_INCLUDED at its top so the guard holds), or in a Post block created
+        /// beside the container where none does (the stock DefaultTessellation ones).
+        ///
+        /// What tessellates is decided by evidence, not by name: a container is tessellating
+        /// when a subshader block it references is named *Tessellation* or, for a block file
+        /// shipped by the host, when that file carries a hull stage. And the one assumption
+        /// whose breakage would be SILENT - a hull pass entered through something other than
+        /// vertTess, where the override compiles as a function nobody calls and the mesh ships
+        /// shattered with the right password - is checked here in plain text: every host block
+        /// with N hull stages must name vertTess as the vertex entry N times, or the container
+        /// is not wired and its variants (and the wrappers riding on them) go on the deny list.
+        /// Blocks that live in lilToon rather than the host cannot be read here; for those the
+        /// sentinel already makes a vertTess rename a compile error.
+        ///
+        /// Everything here happens before the single ImportAsset in EnsureMerged, so wiring
+        /// costs no extra import and no extra compile.
+        /// </summary>
+        private static void PatchTessellation(MeshProtectVariant variant, string folder,
+                                              string mergedFamily)
+        {
+            string tessText = MeshProtectShaderGen.EmitTessHlsl(variant);
+            var appended = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var failedPasses = new List<string>();
+            bool denyAll = false;
+
+            foreach (string path in Directory.GetFiles(folder, "*.lilcontainer",
+                                                       SearchOption.AllDirectories))
+            {
+                string text = File.ReadAllText(path);
+                string dir = Path.GetDirectoryName(path);
+                if (!ContainerTessellates(dir, text)) continue;
+
+                string why = WireTessContainer(path, dir, text, tessText, appended);
+                if (why == null) continue;
+
+                // Recorded ROOT-relative - "GTAO/ltspass_aotess_opaque", not the container's own
+                // "ltspass_aotess_opaque" - because MergedShaderFor compares suffixes relative to
+                // the root family (HostFor resolves a sub-family to its parent). An unqualified
+                // entry can never match one, and lilSSRT's AO tessellation lives ENTIRELY in
+                // sub-families. A failure that cannot even be named goes to deny-everything.
+                string suffix = QualifiedSuffix(folder, mergedFamily, path, text);
+                if (suffix == null) denyAll = true; else failedPasses.Add(suffix);
+                Debug.LogWarning($"[MeshProtect] Tessellating container " +
+                                 $"'{Path.GetFileName(path)}' was not wired for the decode: {why}. " +
+                                 "Materials on its variants ship unprotected and intact.");
+            }
+
+            var denied = new List<string>(failedPasses);
+            if (failedPasses.Count > 0)
+            {
+                // A wrapper is just a name and a UsePass; a material sits on the wrapper. If the
+                // pass container under it could not be wired, the wrapper's variant is exactly as
+                // broken, whatever it is called. Matched on the QUALIFIED name, exactly: the
+                // root, GTAO and RTAO wrappers all reference an identically-named pass container
+                // in their own folder, and an ends-with match would deny the wired root variant
+                // for a sub-family failure while the broken sub-family one sailed through.
+                foreach (string path in Directory.GetFiles(folder, "*.lilcontainer",
+                                                           SearchOption.AllDirectories))
+                {
+                    string text = File.ReadAllText(path);
+                    string passRef = QuotedLineValue(text, "lilPassShaderName");
+                    if (passRef == null) continue;
+                    const string tag = "*LIL_SHADER_NAME*/";
+                    int at = passRef.IndexOf(tag, StringComparison.Ordinal);
+                    if (at < 0) continue;
+                    string dir = Path.GetDirectoryName(path);
+                    string prefix = SubFamilyPrefix(folder, mergedFamily, dir);
+                    if (prefix == null) continue;
+                    if (!failedPasses.Contains(prefix + passRef.Substring(at + tag.Length)))
+                        continue;
+                    string suffix = QualifiedSuffix(folder, mergedFamily, path, text);
+                    if (suffix == null) denyAll = true; else denied.Add(suffix);
+                }
+            }
+
+            if (denyAll) denied.Add("*");
+            File.WriteAllText(Path.Combine(folder, TessMarkerFile),
+                "tessgen=" + TessFormat + ";" +
+                (denied.Count == 0 ? "ok" : "deny=" + string.Join(",", denied.Distinct())));
+        }
+
+        /// <summary>
+        /// The prefix that lifts a container-relative name into the root family's namespace:
+        /// "" at the root, "GTAO/" inside the GTAO sub-family. Read from the governing
+        /// lilCustomShaderDatas.lilblock, which PatchNestedFamilies has already renamed onto the
+        /// merged family - so the prefix is exactly the segment MergedShaderFor's suffixes carry.
+        /// Null when no governing block resolves to the merged family: such a container's
+        /// variants cannot be addressed, and the caller must deny everything rather than guess.
+        /// </summary>
+        private static string SubFamilyPrefix(string folder, string mergedFamily, string dir)
+        {
+            try
+            {
+                string root = Path.GetFullPath(folder);
+                for (string d = dir; d != null; d = Directory.GetParent(d)?.FullName)
+                {
+                    string datas = Path.Combine(d, "lilCustomShaderDatas.lilblock");
+                    if (File.Exists(datas))
+                    {
+                        string family = Field(File.ReadAllText(datas), "ShaderName");
+                        if (family == mergedFamily) return "";
+                        if (family != null &&
+                            family.StartsWith(mergedFamily + "/", StringComparison.Ordinal))
+                            return family.Substring(mergedFamily.Length + 1) + "/";
+                        return null;
+                    }
+                    if (string.Equals(Path.GetFullPath(d), root, StringComparison.OrdinalIgnoreCase))
+                        return "";   // the root's own Datas block is written later, by WriteMerged
+                }
+            }
+            catch { /* fall through to null */ }
+            return null;
+        }
+
+        private static string QualifiedSuffix(string folder, string mergedFamily,
+                                              string path, string text)
+        {
+            string prefix = SubFamilyPrefix(folder, mergedFamily, Path.GetDirectoryName(path));
+            string suffix = ShaderSuffix(text);
+            return prefix == null || suffix == null ? null : prefix + suffix;
+        }
+
+        private static bool ContainerTessellates(string dir, string text)
+        {
+            foreach (string raw in text.Split('\n'))
+            {
+                string line = raw.TrimStart();
+                if (!line.StartsWith("lilSubShader", StringComparison.Ordinal)) continue;
+                string value = Quoted(line);
+                if (value == null) continue;
+                if (value.Contains("Tessellation")) return true;
+                if (!value.EndsWith(".lilblock", StringComparison.OrdinalIgnoreCase)) continue;
+
+                // Insert blocks walk through here too; they carry no hull stage, so the scan is
+                // simply false for them.
+                try
+                {
+                    string blockPath = Path.GetFullPath(Path.Combine(dir, value));
+                    if (File.Exists(blockPath) &&
+                        File.ReadAllText(blockPath).Contains("#pragma hull"))
+                        return true;
+                }
+                catch { /* an unreadable reference cannot prove tessellation */ }
+            }
+            return false;
+        }
+
+        /// <summary>Wire one container. Returns null on success, the reason on refusal.</summary>
+        private static string WireTessContainer(string path, string dir, string text,
+                                                string tessText, HashSet<string> appended)
+        {
+            const string include = "#include \"custom.hlsl\"";
+            if (!text.Contains(include))
+                return "it has no custom.hlsl include to anchor the define on";
+
+            bool hasInsert = false;
+            string postFile = null;
+            foreach (string raw in text.Split('\n'))
+            {
+                string line = raw.TrimStart();
+                if (line.StartsWith("lilSubShaderInsertPost", StringComparison.Ordinal))
+                    postFile = Quoted(line);
+                else if (line.StartsWith("lilSubShaderInsert", StringComparison.Ordinal))
+                    hasInsert = true;
+            }
+            if (!hasInsert)
+                return "it has no lilSubShaderInsert line, so the rename in custom_insert.hlsl " +
+                       "would never reach it";
+
+            // The silent assumption, checked in plain text. Everything else that could move
+            // under us breaks into a compile error and the family degrades; this one would
+            // compile an override nobody calls.
+            foreach (string raw in text.Split('\n'))
+            {
+                string line = raw.TrimStart();
+                if (!line.StartsWith("lilSubShader", StringComparison.Ordinal)) continue;
+                if (line.StartsWith("lilSubShaderInsert", StringComparison.Ordinal)) continue;
+                string value = Quoted(line);
+                if (value == null ||
+                    !value.EndsWith(".lilblock", StringComparison.OrdinalIgnoreCase)) continue;
+                string blockPath;
+                try { blockPath = Path.GetFullPath(Path.Combine(dir, value)); }
+                catch { return $"the block reference '{value}' cannot be resolved"; }
+                if (!File.Exists(blockPath)) continue;
+                string block = File.ReadAllText(blockPath);
+                int hulls = CountOf(block, "#pragma hull");
+                if (hulls > 0 && CountOf(block, "#pragma vertex vertTess") < hulls)
+                    return $"'{value}' has a hull stage whose vertex entry is not vertTess, so " +
+                           "the decode would have nowhere to run";
+            }
+
+            if (postFile != null)
+            {
+                string postPath;
+                try { postPath = Path.GetFullPath(Path.Combine(dir, postFile)); }
+                catch { return $"its Post block reference '{postFile}' cannot be resolved"; }
+                if (!File.Exists(postPath))
+                    return $"its Post block '{postFile}' does not exist in the copy";
+                if (appended.Add(postPath))
+                    File.AppendAllText(postPath, "\n" + tessText);
+            }
+            else
+            {
+                // A created Post block, beside the container. The name must not contain BRP, URP
+                // or HDRP: lilToon's importer tests line.Contains(rpname) before it looks for
+                // lilSubShaderInsertPost, and would eat the declaration as a subshader line.
+                const string postName = "lilMeshProtectTessPost.lilblock";
+                string postPath = Path.Combine(dir, postName);
+                if (!File.Exists(postPath)) File.WriteAllText(postPath, tessText);
+
+                int at = text.IndexOf("lilSubShaderInsert", StringComparison.Ordinal);
+                int lineStart = text.LastIndexOf('\n', at) + 1;
+                int lineEnd = text.IndexOf('\n', at);
+                if (lineEnd < 0)
+                    return "its lilSubShaderInsert line is the last line of the file";
+                string indent = text.Substring(lineStart, at - lineStart);
+                text = text.Insert(lineEnd + 1,
+                                   indent + "lilSubShaderInsertPost \"" + postName + "\"\n");
+            }
+
+            text = text.Replace(include,
+                                "#define LILMP_TESS_POST\n\n        " + include);
+            File.WriteAllText(path, text);
+            return null;
+        }
+
+        private static string Quoted(string line)
+        {
+            int a = line.IndexOf('"');
+            if (a < 0) return null;
+            int b = line.IndexOf('"', a + 1);
+            return b < 0 ? null : line.Substring(a + 1, b - a - 1);
+        }
+
+        private static string QuotedLineValue(string text, string key)
+        {
+            foreach (string raw in text.Split('\n'))
+            {
+                string line = raw.TrimStart();
+                if (line.StartsWith(key, StringComparison.Ordinal)) return Quoted(line);
+            }
+            return null;
+        }
+
+        /// <summary>The family-relative shader suffix a container declares, e.g. "ltspass_aotess_opaque".</summary>
+        private static string ShaderSuffix(string containerText)
+        {
+            string name = QuotedLineValue(containerText, "Shader ");
+            if (name == null) return null;
+            const string tag = "*LIL_SHADER_NAME*/";
+            int i = name.IndexOf(tag, StringComparison.Ordinal);
+            return i < 0 ? null : name.Substring(i + tag.Length);
+        }
+
+        private static int CountOf(string text, string needle)
+        {
+            int n = 0;
+            for (int i = text.IndexOf(needle, StringComparison.Ordinal); i >= 0;
+                 i = text.IndexOf(needle, i + needle.Length, StringComparison.Ordinal))
+                n++;
+            return n;
+        }
+
+        /// <summary>
         /// A shader variant that subdivides the mesh on the GPU. Matched on the family-relative
         /// name, so it catches both lilToon's own Tessellation variants and lilSSRT's
         /// AOTessellation ones, in the root family and in a sub-family alike.
@@ -526,6 +837,53 @@ namespace MeshProtect
                 || shaderName.Contains("/AOTessellation/")
                 || shaderName.Contains("/ltspass_tess")
                 || shaderName.Contains("/ltspass_aotess");
+        }
+
+        /// <summary>
+        /// The deny list from this merged family's wiring record, or null when the record is
+        /// missing, unreadable or from another format - all of which mean "treat tessellation
+        /// the way the pre-wiring versions did, and re-merge when the next rebuild asks".
+        /// An empty set means every tessellating container was wired.
+        /// </summary>
+        private static HashSet<string> TessWiring(MeshProtectRoot settings,
+                                                  MeshProtectVariant variant, Host host)
+        {
+            try
+            {
+                string path = Path.Combine(Folder(settings, variant, host), TessMarkerFile);
+                if (!File.Exists(path)) return null;
+                string text = File.ReadAllText(path).Trim();
+                string prefix = "tessgen=" + TessFormat + ";";
+                if (!text.StartsWith(prefix, StringComparison.Ordinal)) return null;
+                string rest = text.Substring(prefix.Length);
+                if (rest == "ok") return new HashSet<string>(StringComparer.Ordinal);
+                const string deny = "deny=";
+                if (!rest.StartsWith(deny, StringComparison.Ordinal)) return null;
+                return new HashSet<string>(
+                    rest.Substring(deny.Length)
+                        .Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries),
+                    StringComparer.Ordinal);
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// True when this merged family predates the tessellation wiring - the case where the
+        /// remedy is 'Rebuild Shader', not a change to the material.
+        /// </summary>
+        public static bool TessSupportIsStale(MeshProtectRoot settings,
+                                              MeshProtectVariant variant, Host host)
+            => TessWiring(settings, variant, host) == null;
+
+        private static bool TessRecordCurrent(string folder)
+        {
+            try
+            {
+                string path = Path.Combine(folder, TessMarkerFile);
+                return File.Exists(path) && File.ReadAllText(path).TrimStart()
+                    .StartsWith("tessgen=" + TessFormat + ";", StringComparison.Ordinal);
+            }
+            catch { return false; }
         }
 
         /// <summary>Shaders of this family that Unity actually compiled.</summary>

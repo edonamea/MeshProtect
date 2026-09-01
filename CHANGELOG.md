@@ -14,9 +14,21 @@
   you do, a tessellating lilToon material is refused with a warning naming it and ships
   UNPROTECTED and intact, rather than protected and broken the way earlier versions shipped it.
   Nothing changes for materials that do not tessellate.
-- lilSSAO's and lilSSRT's tessellating variants are still refused, as in 1.1.0: their merged
-  families are built from those products' own shader containers, which is not where this fix can
-  live. Switching such a material off tessellation lets it be protected.
+- **lilSSAO's and lilSSRT's tessellating variants are protected too** - including the
+  AOTessellation shaders lilSSRT assigns BY ITSELF whenever its AO is on with default settings,
+  which nobody ever picks and nobody can pick their way off. The merged family is already a copy
+  this tool writes, so the same early decode is wired into its tessellating containers at merge
+  time; a container that cannot be verified safe goes on a deny list recorded at merge time,
+  which conversion consults, and the warning names the exact controls that leave the variant.
+  Existing merged families pick the wiring up on the same 'Rebuild Shader' press.
+- **The summary line stopped under-reporting.** A refused material slot ships its sub-mesh
+  readable and intact next to protected neighbours - and the one line an author reads said
+  "Protected 12 mesh(es)" with no qualifier. It now counts those sub-meshes, in the Console and
+  in last-upload.txt.
+- **'Measure Skinning Residual' is now a full pre-upload dry run.** It always ran the whole
+  pipeline on a throwaway clone; it now also hands over every warning that run produced - so a
+  refused material is knowable before an upload costs anything, in a Console the SDK is not
+  modal-blocking.
 
 Upgrading keeps your password, your prepared grafts and your merged host families: the shared
 signature they are cached on did not move. Only the avatar's own family needs the one rebuild.

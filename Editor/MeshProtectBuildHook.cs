@@ -215,6 +215,12 @@ namespace MeshProtect
                               ? $" {report.skippedRenderers} renderer(s) were LEFT UNPROTECTED and " +
                                 "will be visible while the avatar is locked - the warnings above " +
                                 "say which and why."
+                              : "") +
+                          (report.unprotectedSubMeshes > 0
+                              ? $" {report.unprotectedSubMeshes} sub-mesh(es) on " +
+                                $"{report.unprotectedSubMeshRenderers} renderer(s) ship " +
+                                "UNPROTECTED and stay visible while the avatar is locked - the " +
+                                "warnings above say which and why."
                               : ""));
 
                 WriteReport(settings, avatarGameObject, report, spoken, true);
@@ -344,6 +350,10 @@ namespace MeshProtect
                     if (report.skippedRenderers > 0)
                         text.AppendLine($"{report.skippedRenderers} renderer(s) were left " +
                                         "unprotected and will be visible while the avatar is locked.");
+                    if (report.unprotectedSubMeshes > 0)
+                        text.AppendLine($"{report.unprotectedSubMeshes} sub-mesh(es) on " +
+                                        $"{report.unprotectedSubMeshRenderers} renderer(s) ship " +
+                                        "unprotected and stay visible while the avatar is locked.");
 
                     // The roster answers the question every screenshot round-trip stalls on:
                     // which renderer is this, and what did the build do to it?

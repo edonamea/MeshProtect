@@ -79,8 +79,8 @@ namespace MPTest
                               $"{family}: the host's own material has {hostProperty}");
 
                         var copy = new Material(material);
-                        var target = MeshProtectLilHost.MergedShaderFor(root.variant, host,
-                                                                        material.shader);
+                        var target = MeshProtectLilHost.MergedShaderFor(root, root.variant,
+                                                                        host, material.shader);
                         bool moved = target != null;
                         if (moved) copy.shader = target;
                         Check(moved, $"{family}: a material moves onto the merged family");
@@ -105,7 +105,8 @@ namespace MPTest
                             Check(subHost != null && subHost.family == family,
                                   $"{family}: a sub-family resolves to its parent, not itself");
 
-                            var subTarget = MeshProtectLilHost.MergedShaderFor(root.variant,
+                            var subTarget = MeshProtectLilHost.MergedShaderFor(root,
+                                                                               root.variant,
                                                                                subHost, sub);
                             Check(subTarget != null && subTarget.name.StartsWith(merged + "/GTAO"),
                                   $"{family}: the sub-family maps into the merged family");
@@ -132,21 +133,136 @@ namespace MPTest
                             }
                         }
 
-                        // lilSSRT's AO tessellation subdivides on the GPU and interpolates the
-                        // appdata before the decode runs, so the vertices it invents cannot be
-                        // restored. Those variants must be refused, not protected badly.
+                        // Tessellating variants used to be refused outright; the wiring pass
+                        // now defines LILMP_TESS_POST in the copied containers and appends the
+                        // vertTess override to their Post blocks, so the decode runs once per
+                        // ORIGINAL vertex, before the tessellator. These assertions used to
+                        // demand null; a wired family owes a compiled, protect-shaped shader.
                         var tess = Shader.Find("Hidden/" + family + "/GTAO/AOTessellation/Opaque")
                                    ?? Shader.Find("Hidden/" + family + "/AOTessellation/Opaque");
                         if (tess != null)
-                            Check(MeshProtectLilHost.MergedShaderFor(root.variant, host, tess) == null,
-                                  $"{family}: an AO-tessellating variant is refused, not protected");
+                        {
+                            var tessTarget = MeshProtectLilHost.MergedShaderFor(
+                                root, root.variant, host, tess);
+                            Check(tessTarget != null,
+                                  $"{family}: an AO-tessellating variant is protected now");
+                            if (tessTarget != null)
+                            {
+                                var tessCopy = new Material(tess) { shader = tessTarget };
+                                Check(tessCopy.HasProperty(root.variant.macProperty),
+                                      $"{family}: the AO-tess variant declares the decode's verifier");
+                                UnityEngine.Object.DestroyImmediate(tessCopy);
+                            }
+                        }
 
-                        // lilToon's own Tessellation mode subdivides through the same domain
-                        // shader, so it has to be refused for the same reason.
                         var plainTess = Shader.Find("Hidden/" + family + "/Tessellation/Opaque");
                         if (plainTess != null)
-                            Check(MeshProtectLilHost.MergedShaderFor(root.variant, host, plainTess) == null,
-                                  $"{family}: a plain Tessellation variant is refused too");
+                            Check(MeshProtectLilHost.MergedShaderFor(root, root.variant, host,
+                                                                     plainTess) != null,
+                                  $"{family}: a plain Tessellation variant is protected now");
+
+                        // The wiring record is the delivery mechanism: MergedShaderFor consults
+                        // it, EnsureMerged re-merges without it, and FindMerged ignores it so an
+                        // old merged family keeps serving what it already served. Deleting it
+                        // must bring back the old refusal WITHOUT touching anything else.
+                        string mergedRoot = MeshProtectShaderGen.FolderFor(root, root.variant);
+                        string tessRecord = System.IO.Directory
+                            .GetFiles(mergedRoot, "tess.txt", System.IO.SearchOption.AllDirectories)
+                            .FirstOrDefault(p => System.IO.File.ReadAllText(
+                                System.IO.Path.Combine(System.IO.Path.GetDirectoryName(p), "host.txt"))
+                                .Contains("host=" + family + ";"));
+                        Check(tessRecord != null && System.IO.File.ReadAllText(tessRecord)
+                                  .Trim().StartsWith("tessgen=2;"),
+                              $"{family}: the wiring record exists and carries the current format");
+                        if (tessRecord != null && tess != null)
+                        {
+                            string saved = System.IO.File.ReadAllText(tessRecord);
+                            System.IO.File.Delete(tessRecord);
+                            Check(MeshProtectLilHost.MergedShaderFor(root, root.variant, host,
+                                                                     tess) == null,
+                                  $"{family}: without the record, tessellation is refused again");
+                            Check(MeshProtectLilHost.MergedShaderFor(root, root.variant, host,
+                                                                     material.shader) != null,
+                                  $"{family}: without the record, everything else still serves");
+                            System.IO.File.WriteAllText(tessRecord, saved);
+
+                            string mergedDir = System.IO.Path.GetDirectoryName(tessRecord);
+
+                            // The tripwire for the one mutation the whole suite was measured
+                            // blind to: skip the LILMP_TESS_POST insertion and everything still
+                            // passes - wiring "succeeds", the record says ok, the shaders
+                            // compile, MergedShaderFor serves them - and every tessellated mesh
+                            // ships shattered with the right password. The define is what arms
+                            // the rename; assert it is physically present in every tessellating
+                            // container of the copy.
+                            int tessContainers = 0, defined = 0;
+                            foreach (string cpath in System.IO.Directory.GetFiles(
+                                         mergedDir, "*.lilcontainer",
+                                         System.IO.SearchOption.AllDirectories))
+                            {
+                                string ctext = System.IO.File.ReadAllText(cpath);
+                                if (!ctext.Contains("Tessellation")) continue;
+                                if (!ctext.Contains("HLSLINCLUDE")) continue;
+                                tessContainers++;
+                                int def = ctext.IndexOf("#define LILMP_TESS_POST",
+                                                        StringComparison.Ordinal);
+                                int inc = ctext.IndexOf("#include \"custom.hlsl\"",
+                                                        StringComparison.Ordinal);
+                                if (def >= 0 && inc > def) defined++;
+                            }
+                            Check(tessContainers > 0 && defined == tessContainers,
+                                  $"{family}: every tessellating container is armed " +
+                                  $"({defined}/{tessContainers} carry #define LILMP_TESS_POST " +
+                                  "before custom.hlsl - an unarmed one compiles, serves, and " +
+                                  "ships shattered with the right password)");
+
+                            // The deny path, exercised - no shipped container fails wiring, so
+                            // inject a record and prove the matching actually refuses. The
+                            // entries are root-relative on purpose: MergedShaderFor compares
+                            // suffixes relative to the ROOT family, and an unqualified
+                            // sub-family entry can never match (that was a shipped-blocking
+                            // defect once already).
+                            var gtaoTess = Shader.Find(
+                                "Hidden/" + family + "/GTAO/AOTessellation/Opaque");
+                            if (gtaoTess != null)
+                            {
+                                System.IO.File.WriteAllText(tessRecord,
+                                    "tessgen=2;deny=GTAO/AOTessellation/Opaque");
+                                Check(MeshProtectLilHost.MergedShaderFor(root, root.variant,
+                                          host, gtaoTess) == null,
+                                      $"{family}: a qualified deny entry refuses its variant");
+                                Check(MeshProtectLilHost.MergedShaderFor(root, root.variant,
+                                          host, material.shader) != null,
+                                      $"{family}: a deny entry does not spill onto other variants");
+
+                                System.IO.File.WriteAllText(tessRecord, "tessgen=2;deny=*");
+                                Check(MeshProtectLilHost.MergedShaderFor(root, root.variant,
+                                          host, gtaoTess) == null,
+                                      $"{family}: deny=* falls back to the name refusal");
+                                Check(MeshProtectLilHost.MergedShaderFor(root, root.variant,
+                                          host, material.shader) != null,
+                                      $"{family}: deny=* still serves non-tessellating variants");
+
+                                System.IO.File.WriteAllText(tessRecord, saved);
+                            }
+
+                            // Delivery: an old merged folder re-merges on the next unforced
+                            // EnsureMerged - that is the entire mechanism by which existing
+                            // users receive the wiring, and nothing asked it without force.
+                            System.IO.File.Delete(tessRecord);
+                            bool remerged = MeshProtectLilHost.EnsureMerged(
+                                root, root.variant, host, out _, false);
+                            bool recordBack = System.IO.File.Exists(tessRecord) &&
+                                System.IO.File.ReadAllText(tessRecord).Trim()
+                                    .StartsWith("tessgen=2;");
+                            Check(remerged && recordBack,
+                                  $"{family}: a record-less merge re-merges without force " +
+                                  (remerged
+                                      ? (recordBack ? "(re-merged, record back)"
+                                                    : "(re-merged but wrote no current record)")
+                                      : "(SKIPPED - existing users would never receive " +
+                                        "tessellation support)"));
+                        }
 
                         // FakeShadow is the variant the renderer survey used to lose. lilSSRT's
                         // family name carries no "lilToon", and DefaultFakeShadow is the one
@@ -161,7 +277,7 @@ namespace MPTest
                             var fakeMaterial = new Material(fake);
                             Check(MeshProtectPipeline.CanCarryTheDecode(fakeMaterial),
                                   $"{family}: a FakeShadow material is still worth looking at");
-                            Check(MeshProtectLilHost.MergedShaderFor(root.variant, host, fake) != null,
+                            Check(MeshProtectLilHost.MergedShaderFor(root, root.variant, host, fake) != null,
                                   $"{family}: a FakeShadow material moves onto the merged family");
                             UnityEngine.Object.DestroyImmediate(fakeMaterial);
                         }

@@ -83,6 +83,7 @@ namespace MPTest
                     TestOneClickFromTheInspector();
                     TestHalfOfTheHashIsMeasured();
                     TestSharedEmittersArePinned();
+                TestTessDenyListIsQualified();
                     TestTessellationEmitterIsPinned();
                 }
                 finally
@@ -136,7 +137,7 @@ namespace MPTest
         /// </summary>
         private static void TestSharedEmittersArePinned()
         {
-            const string Expected = "FC96CC41A124B092526D925A616E7AF1793A3FC83DB23C25A2A89996BEE9C239";
+            const string Expected = "873BBAE441A3D3B225B8B0B01DDEE69EB956D4A0C49F6A88ED832239FFAD2011";
 
             var variant = MeshProtectVariantGenerator.Generate(new System.Random(20260831));
             var text = new StringBuilder();
@@ -227,6 +228,94 @@ namespace MPTest
                       : $"EmitTessHlsl CHANGED: {actual} where {Expected} was pinned. Re-run the " +
                         "tessellation correctness probes before updating this number - nothing " +
                         "else in this suite can tell you whether the new text still decodes.");
+        }
+
+        /// <summary>
+        /// The deny list's RECORDING half, on a crafted merged folder. Every shipped lilSSRT and
+        /// lilSSAO container wires successfully, so on real input the deny path never runs - and
+        /// its first version shipped unable to match anything: it recorded container-relative
+        /// names ("ltspass_aotess_opaque") while MergedShaderFor compares root-relative ones
+        /// ("GTAO/AOTessellation/Opaque"), in exactly the sub-families ALL of lilSSRT's AO
+        /// tessellation lives in, and its wrapper hunt matched by EndsWith across folders - so a
+        /// sub-family wiring failure would have refused the WIRED root variant and shipped the
+        /// broken sub-family one. This pins the fix: a sub-family container that fails the hull
+        /// check must be recorded under its qualified name, drag its own wrapper with it, and
+        /// leave the identically-named root wrapper alone.
+        /// </summary>
+        private static void TestTessDenyListIsQualified()
+        {
+            string folder = Path.Combine(Path.GetTempPath(),
+                                         "mp-denytest-" + Path.GetRandomFileName());
+            try
+            {
+                Directory.CreateDirectory(Path.Combine(folder, "GTAO"));
+
+                // The governing block PatchNestedFamilies would already have renamed.
+                File.WriteAllText(Path.Combine(folder, "GTAO", "lilCustomShaderDatas.lilblock"),
+                                  "ShaderName \"FakeFam/GTAO\"\n");
+
+                // A sub-family pass container whose block fails the one SILENT invariant:
+                // a hull stage entered through something other than vertTess.
+                File.WriteAllText(Path.Combine(folder, "badtess.lilblock"),
+                                  "#pragma vertex vertSomethingElse\n#pragma hull hull\n");
+                File.WriteAllText(Path.Combine(folder, "GTAO", "post.lilblock"), "// host post\n");
+                File.WriteAllText(Path.Combine(folder, "GTAO", "ltspass_aotess_opaque.lilcontainer"),
+                                  "Shader \"Hidden/*LIL_SHADER_NAME*/ltspass_aotess_opaque\"\n" +
+                                  "{\n    HLSLINCLUDE\n        #include \"custom.hlsl\"\n    ENDHLSL\n" +
+                                  "    lilSubShaderInsert \"insert.lilblock\"\n" +
+                                  "    lilSubShaderInsertPost \"post.lilblock\"\n" +
+                                  "    lilSubShaderBRP \"../badtess.lilblock\"\n}\n");
+
+                // Its wrapper, and a ROOT wrapper whose pass reference carries the same stem -
+                // the shape that made EndsWith deny the wrong folder.
+                File.WriteAllText(Path.Combine(folder, "GTAO", "lts_aotess.lilcontainer"),
+                                  "Shader \"Hidden/*LIL_SHADER_NAME*/AOTessellation/Opaque\"\n" +
+                                  "{\n    lilPassShaderName \"Hidden/*LIL_SHADER_NAME*/ltspass_aotess_opaque\"\n}\n");
+                File.WriteAllText(Path.Combine(folder, "lts_roottess.lilcontainer"),
+                                  "Shader \"Hidden/*LIL_SHADER_NAME*/Tessellation/Opaque\"\n" +
+                                  "{\n    lilPassShaderName \"Hidden/*LIL_SHADER_NAME*/ltspass_aotess_opaque\"\n}\n");
+
+                var variant = MeshProtectVariantGenerator.Generate(new System.Random(20260902));
+                var patch = typeof(MeshProtectLilHost).GetMethod(
+                    "PatchTessellation", BindingFlags.NonPublic | BindingFlags.Static);
+                if (patch == null)
+                {
+                    Check(false, "tessdeny/patcher-exists",
+                          "MeshProtectLilHost.PatchTessellation is gone");
+                    return;
+                }
+                patch.Invoke(null, new object[] { variant, folder, "FakeFam" });
+
+                string record = File.ReadAllText(Path.Combine(folder, "tess.txt")).Trim();
+                Check(record.StartsWith("tessgen=2;deny=", StringComparison.Ordinal),
+                      "tessdeny/failure-is-recorded",
+                      "a hull pass entered through vertSomethingElse must land on the deny " +
+                      "list, got: " + record);
+
+                string list = record.Contains("deny=")
+                    ? record.Substring(record.IndexOf("deny=", StringComparison.Ordinal) + 5) : "";
+                var entries = new HashSet<string>(list.Split(','));
+                Check(entries.Contains("GTAO/ltspass_aotess_opaque"),
+                      "tessdeny/pass-suffix-is-qualified",
+                      "recorded: " + record);
+                Check(entries.Contains("GTAO/AOTessellation/Opaque"),
+                      "tessdeny/wrapper-follows-its-pass",
+                      "recorded: " + record);
+                Check(!entries.Contains("Tessellation/Opaque") &&
+                      !entries.Contains("AOTessellation/Opaque") &&
+                      !entries.Contains("ltspass_aotess_opaque"),
+                      "tessdeny/no-cross-folder-or-unqualified-entries",
+                      "an unqualified or root entry would refuse the WIRED variant while the " +
+                      "broken one sails through, recorded: " + record);
+            }
+            catch (Exception e)
+            {
+                Check(false, "tessdeny/no-exception", e.Message);
+            }
+            finally
+            {
+                try { Directory.Delete(folder, true); } catch { }
+            }
         }
 
         // ------------------------------------------------------------------ setup

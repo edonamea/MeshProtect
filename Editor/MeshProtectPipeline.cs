@@ -52,6 +52,19 @@ namespace MeshProtect
             public int skippedRenderers;
 
             /// <summary>
+            /// Material slots on KEPT renderers whose conversion was refused - a tessellating
+            /// host variant, a graft that is not prepared, a family that came up short. Each one
+            /// is a sub-mesh shipping readable and intact next to protected neighbours, which is
+            /// exactly the case the summary line used to hide: it said "Protected 12 mesh(es)"
+            /// with no qualifier, because skippedRenderers only counts renderers dropped whole.
+            /// The author's own ignore list is not counted - that is a choice, not a refusal.
+            /// </summary>
+            public int unprotectedSubMeshes;
+
+            /// <summary>How many renderers those refused slots sit on.</summary>
+            public int unprotectedSubMeshRenderers;
+
+            /// <summary>
             /// Was not protecting the RIGHT answer, rather than a failure to reach one?
             ///
             /// Only the Quest build sets this. Everything else that ends with nothing protected -
@@ -300,6 +313,7 @@ namespace MeshProtect
             // out of UV6, and on a mesh this build never wrote, UV6 holds whatever the artist put
             // there. So the materials go on only once it is settled that the mesh will be baked.
             var candidates = new List<(Renderer renderer, Material[] materials, bool[] protectedSubMesh)>();
+            var refusedOnKept = new Dictionary<Renderer, int>();
 
             foreach (var renderer in renderers)
             {
@@ -307,6 +321,7 @@ namespace MeshProtect
                 var newMaterials = new Material[sourceMaterials.Length];
                 var protectedSubMesh = new bool[sourceMaterials.Length];
 
+                int refusedSlots = 0;
                 for (int slot = 0; slot < sourceMaterials.Length; slot++)
                 {
                     var source = sourceMaterials[slot];
@@ -330,7 +345,14 @@ namespace MeshProtect
                         newMaterials[slot] = converted;
                         protectedSubMesh[slot] = true;
                     }
+                    else
+                    {
+                        refusedSlots++;
+                    }
                 }
+
+                if (refusedSlots > 0 && protectedSubMesh.Any(p => p))
+                    refusedOnKept[renderer] = refusedSlots;
 
                 if (!protectedSubMesh.Any(p => p))
                 {
@@ -346,6 +368,17 @@ namespace MeshProtect
 
             DropRenderersThatCannotBeProtected(candidates, variant, report);
             DropRenderersWhoseMeshLeaks(avatar, candidates, report);
+
+            // Counted over the SURVIVORS only. A renderer the Drop passes removed whole is
+            // skippedRenderers; counting its refused slots too would put one renderer in both
+            // summary categories, and the sub-mesh line would claim a refusal "beside protected
+            // neighbours" on a renderer where nothing is protected at all.
+            foreach (var c in candidates)
+                if (refusedOnKept.TryGetValue(c.renderer, out int refused))
+                {
+                    report.unprotectedSubMeshes += refused;
+                    report.unprotectedSubMeshRenderers++;
+                }
 
             var plan = new List<(Renderer renderer, bool[] protectedSubMesh)>();
             foreach (var (renderer, materials, protectedSubMesh) in candidates)
@@ -2082,7 +2115,7 @@ namespace MeshProtect
             // Straight across to the same shader in the merged family: it was built from the
             // host's containers, so every name matches but the family segment. Assigning the
             // shader after the copy is what preserves the host's property values.
-            var target = MeshProtectLilHost.MergedShaderFor(variant, host, source.shader);
+            var target = MeshProtectLilHost.MergedShaderFor(settings, variant, host, source.shader);
             if (target != null) copy.shader = target;
 
             if (target == null || !IsProtectShader(copy, variant.shaderName))
@@ -2092,14 +2125,45 @@ namespace MeshProtect
 
                 bool tessellating = source.shader != null
                                     && MeshProtectLilHost.IsTessellating(source.shader.name);
+
+                // Two distinct causes wear the same refusal, and the remedies are different.
+                // A merged family built before the tessellation wiring existed is fixed by one
+                // press of Rebuild Shader; a container the wiring pass could not verify is not,
+                // and there the only road to protection is taking the material off the variant.
+                // The advice for that road has to name controls that actually leave it: lilSSRT
+                // puts AO materials onto its AOTessellation shaders BY ITSELF whenever AO is on
+                // with the shipped defaults (Quality High, Evaluation Auto, Vertex AO
+                // Tessellation Auto) - the shader is Hidden/, absent from the dropdown, and the
+                // inspector reassigns it on every open; lilToon's Rendering Mode does not escape
+                // either, Cutout maps straight back to AOTessellation/Cutout.
+                bool staleWiring = tessellating &&
+                    MeshProtectLilHost.TessSupportIsStale(settings, variant, host);
+                // Chosen by VARIANT, not by host: a lilSSRT install also carries plain
+                // lilToon-style Tessellation variants, and pointing those at the AO controls
+                // sends the author to a dropdown that does not govern their material.
+                bool aoVariant = source.shader != null &&
+                    (source.shader.name.Contains("/AOTessellation/") ||
+                     source.shader.name.Contains("/ltspass_aotess"));
+                string offSwitch = aoVariant
+                    ? "open 'lilSSRT Occlusion' on the material and set Evaluation to Pixel " +
+                      "(better AO, costs fragment time) or Vertex AO Tessellation to Off " +
+                      "(cheaper, coarser AO)"
+                    : "switch the material off lilToon's Tessellation";
                 report.warnings.Add(tessellating
-                    ? $"'{source.name}' is on a tessellating variant of '{host.family}'. " +
-                      "Tessellation subdivides the mesh on the GPU, and the vertices it invents " +
-                      "did not exist when this was baked - they would be pushed somewhere " +
-                      "arbitrary and the surface would shimmer even with the right password. " +
-                      "That sub-mesh ships UNPROTECTED and intact. Switching this material off " +
-                      "tessellation - the rendering mode, or the AO evaluation path - lets it be " +
-                      "protected."
+                    ? (staleWiring
+                        ? $"'{source.name}' is on a tessellating variant of '{host.family}', " +
+                          "and this avatar's merged family was built by a version that could " +
+                          "not yet protect tessellation. That sub-mesh ships UNPROTECTED and " +
+                          "intact, and stays VISIBLE while the avatar is locked. Press " +
+                          "'Rebuild Shader', under 'Advanced' on the Mesh Protect Root " +
+                          "component, then upload again - the rebuilt family protects it."
+                        : $"'{source.name}' is on a tessellating variant of '{host.family}' " +
+                          "whose container could not be wired for the decode - see the Console " +
+                          "line from the rebuild for the reason. That sub-mesh ships " +
+                          "UNPROTECTED and intact, and stays VISIBLE while the avatar is " +
+                          "locked; if any other material on the same renderer did convert, " +
+                          "this renderer ends up part protected and part not. To protect it, " +
+                          $"{offSwitch}, then upload again.")
                     : $"'{source.name}' could not be moved onto the merged '{host.family}' family - " +
                       $"it stayed on '{stayedOn}', so that sub-mesh ships UNPROTECTED. Its vertices " +
                       "are left where they are. The merged family is missing a shader it should " +

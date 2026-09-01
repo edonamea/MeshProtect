@@ -94,6 +94,17 @@ namespace MeshProtect
 
                 EditorUtility.ClearProgressBar();
 
+                // The same drain the catch does, on the path where nothing threw. Apply just ran
+                // for real on a throwaway clone, so everything it would say at upload time - a
+                // refused tessellating material, a missing graft, a UV6 conflict - has already
+                // been said, into a list nobody read. This button was always a full dry run of
+                // the build; it only forgot to hand over the findings. At upload time the same
+                // warnings land in a console the SDK modal-blocks; here the author is actually
+                // looking.
+                foreach (var warning in report.warnings)
+                    Debug.LogWarning("[MeshProtect] " + warning);
+                report.warnings.Clear();
+
                 if (!result.ran)
                 {
                     EditorUtility.DisplayDialog(MeshProtectL10n.Tr("dialog.skincheck.title"),
