@@ -367,6 +367,10 @@ namespace MeshProtect
             }
 
             DropRenderersThatCannotBeProtected(candidates, variant, report);
+#if LILMP_VRCSDK3_AVATARS
+            DropRenderersWithUnsafeMaterialSwaps(avatar, settings, candidates,
+                                                materialCache, variant, mac, folder, report);
+#endif
             DropRenderersWhoseMeshLeaks(avatar, candidates, report);
 
             // Counted over the SURVIVORS only. A renderer the Drop passes removed whole is
@@ -488,9 +492,33 @@ namespace MeshProtect
 
                 // Decided before anything is swapped in, because it needs to read the avatar with
                 // its ORIGINAL parameter names - the prepared copies already carry the new ones.
-                var parameters = ResolveParameters(avatar, descriptor, settings, report);
-                parameters.objectMap = ResolveObjectNames(descriptor, settings, report,
-                                                          out bool objectsAllowed);
+                ParameterDecision parameters;
+                bool objectsAllowed = false;
+                bool copiesValid = MeshProtectControllers.ValidatePreparedCopies(settings, out string copiesInvalid);
+                bool hasApplicableCopies = copiesValid &&
+                    MeshProtectControllers.WouldAdopt(descriptor, settings).Count > 0;
+                if (hasApplicableCopies)
+                {
+                    parameters = ResolveParameters(avatar, descriptor, settings, report);
+                    parameters.objectMap = ResolveObjectNames(descriptor, settings, report,
+                                                              out objectsAllowed);
+                }
+                else
+                {
+                    // Only adopted copies require their recorded maps. Without any, derive both
+                    // maps from this build, including parameters and objects added by VRCFury.
+                    parameters = new ParameterDecision();
+                    if (!copiesValid)
+                        report.warnings.Add(
+                            "The prepared controller copies were dropped from this upload because " +
+                            copiesInvalid + ". Your current controllers are used instead. " +
+                            "Press Prepare Controllers to refresh the copies.");
+                    else if (settings.preparedControllers.Count > 0)
+                        report.warnings.Add(
+                            "No prepared controller matches this build's animation layers. " +
+                            "The current controllers are used, and safe name maps are recalculated " +
+                            "after the other avatar tools have run.");
+                }
 
                 // Either decision saying no takes the copies down with it. They carry both kinds of
                 // rename - parameters inside them, object names in their animation paths - so half
@@ -516,10 +544,10 @@ namespace MeshProtect
                     parameters.map = FallbackParameterMap(descriptor, settings, parameters);
                     parameters.objectMap = FallbackObjectMap(descriptor, settings);
 
-                    if (parameters.map.Count > 0 || parameters.objectMap.Count > 0)
+                    if ((settings.preparedControllers.Count > 0 || !copiesValid) &&
+                        (parameters.map.Count > 0 || parameters.objectMap.Count > 0))
                         report.warnings.Add(
-                            "The prepared controller copies were dropped (above), but everything " +
-                            "this build's own FX copy fully accounts for is renamed anyway: " +
+                            "Safe names were recalculated for this build without prepared copies: " +
                             $"{MeshProtectParameters.DistinctParameters(parameters.map)} " +
                             $"parameter(s) and {parameters.objectMap.Count} object name(s). Names " +
                             "your other layers still use keep their originals.");
@@ -597,6 +625,158 @@ namespace MeshProtect
         // ------------------------------------------------------------------ animated swaps
 
         /// <summary>
+        /// Check animated material states before changing any mesh. A renderer whose animation
+        /// cannot carry the decode stays entirely original, including its material keyframes.
+        /// Run before the shared-mesh leak check: a renderer removed here may share its mesh with
+        /// a remaining candidate, which must then be left original too.
+        /// </summary>
+        private static void DropRenderersWithUnsafeMaterialSwaps(
+            GameObject avatar, MeshProtectRoot settings,
+            List<(Renderer renderer, Material[] materials, bool[] protectedSubMesh)> candidates,
+            Dictionary<Material, Material> materialCache, MeshProtectVariant variant, uint mac,
+            string folder, Report report)
+        {
+            var descriptor = avatar.GetComponent<VRC.SDK3.Avatars.Components.VRCAvatarDescriptor>();
+            if (descriptor == null || candidates.Count == 0) return;
+
+            var byPath = candidates.GroupBy(c =>
+                AnimationUtility.CalculateTransformPath(c.renderer.transform, avatar.transform))
+                .ToDictionary(g => g.Key, g => g.ToArray());
+            var rejected = new Dictionary<Renderer, string>();
+            var layers = new List<VRC.SDK3.Avatars.Components.VRCAvatarDescriptor.CustomAnimLayer>();
+            if (descriptor.baseAnimationLayers != null) layers.AddRange(descriptor.baseAnimationLayers);
+            if (descriptor.specialAnimationLayers != null) layers.AddRange(descriptor.specialAnimationLayers);
+
+            var sources = new List<(string label, Transform root, bool canRewrite, AnimationClip[] clips)>();
+            foreach (var layer in layers)
+            {
+                if (layer.isDefault || layer.animatorController == null) continue;
+                bool canRewrite = layer.type ==
+                    VRC.SDK3.Avatars.Components.VRCAvatarDescriptor.AnimLayerType.FX;
+                if (canRewrite && layer.animatorController is
+                    UnityEditor.Animations.AnimatorController controller)
+                {
+                    // Synced overrides live on the layer, not in state.motion. The final rewrite
+                    // changes only state motions, even when the same clip occurs in both places.
+                    // An AnimatorOverrideController is different: its effective clips are all
+                    // replaced through GetOverrides/ApplyOverrides by that rewrite.
+                    var overrides = SyncedOverrideClips(controller);
+                    if (overrides.Length > 0)
+                        sources.Add(("synced layer overrides in the FX controller", avatar.transform,
+                                     false, overrides));
+                }
+                sources.Add(($"the {layer.type} layer", avatar.transform, canRewrite,
+                             layer.animatorController.animationClips));
+            }
+
+            // Child animators use paths relative to their own object, and keep their original
+            // clips. Treat their swaps like other animation layers we cannot rewrite safely.
+            foreach (var animator in avatar.GetComponentsInChildren<Animator>(true))
+            {
+                if (animator.transform == avatar.transform || animator.runtimeAnimatorController == null)
+                    continue;
+                sources.Add(($"Animator '{animator.name}'", animator.transform, false,
+                    animator.runtimeAnimatorController.animationClips));
+            }
+            foreach (var animation in avatar.GetComponentsInChildren<Animation>(true))
+            {
+                var clips = new List<AnimationClip> { animation.clip };
+                foreach (AnimationState state in animation) clips.Add(state.clip);
+                sources.Add(($"Animation '{animation.name}'", animation.transform, false, clips.ToArray()));
+            }
+
+            foreach (var source in sources)
+            {
+                string prefix = AnimationUtility.CalculateTransformPath(source.root, avatar.transform);
+                foreach (var clip in source.clips.Where(c => c != null).Distinct())
+                foreach (var binding in AnimationUtility.GetObjectReferenceCurveBindings(clip))
+                {
+                    if (binding.type != typeof(SkinnedMeshRenderer) && binding.type != typeof(MeshRenderer))
+                        continue;
+                    string path = string.IsNullOrEmpty(prefix) ? binding.path :
+                        string.IsNullOrEmpty(binding.path) ? prefix : prefix + "/" + binding.path;
+                    if (!binding.propertyName.StartsWith("m_Materials", StringComparison.Ordinal) ||
+                        !byPath.TryGetValue(path, out var affected)) continue;
+
+                    var keys = AnimationUtility.GetObjectReferenceCurve(clip, binding);
+                    if (keys == null) continue;
+                    foreach (var candidate in affected)
+                    {
+                        var renderer = candidate.renderer;
+                        if (rejected.ContainsKey(renderer) || !binding.type.IsInstanceOfType(renderer))
+                            continue;
+                        var mask = candidate.protectedSubMesh;
+                        if (mask.Length == 0) continue;
+                        int slot = Mathf.Clamp(ParseMaterialSlot(binding.propertyName), 0, mask.Length - 1);
+                        var original = renderer.sharedMaterials;
+                        bool displaced = mask[slot] || (slot < original.Length && original[slot] != null &&
+                            settings.invisibleMaterials.Contains(original[slot]));
+                        if (!displaced) continue;
+
+                        foreach (var keyframe in keys)
+                        {
+                            var material = keyframe.value as Material;
+                            if (material == null || settings.invisibleMaterials.Contains(material) ||
+                                IsProtectShader(material, variant.shaderName)) continue;
+
+                            string why = null;
+                            if (settings.ignoredMaterials.Contains(material))
+                                why = "the material is in Ignored Materials";
+                            else if (!source.canRewrite)
+                                why = "material swaps in this animation source cannot be rewritten";
+                            else
+                            {
+                                if (!materialCache.TryGetValue(material, out var converted))
+                                {
+                                    converted = ConvertMaterial(material, settings, variant, mac, folder, report);
+                                    materialCache[material] = converted;
+                                }
+                                if (converted == null) why = "the material cannot carry the decode";
+                            }
+                            if (why == null) continue;
+                            rejected[renderer] = $"animation '{clip.name}' in {source.label} " +
+                                $"uses '{material.name}' on material slot {slot}: {why}";
+                            break;
+                        }
+                    }
+                }
+            }
+
+            for (int i = candidates.Count - 1; i >= 0; i--)
+            {
+                var renderer = candidates[i].renderer;
+                if (!rejected.TryGetValue(renderer, out string reason)) continue;
+                report.warnings.Add(
+                    $"Renderer '{renderer.name}' was left UNPROTECTED and unchanged because {reason}. " +
+                    "Its material animations remain usable, and it stays visible while locked. " +
+                    "Use supported materials in ordinary FX states to protect this renderer.");
+                report.skippedRenderers++;
+                candidates.RemoveAt(i);
+            }
+        }
+
+        private static AnimationClip[] SyncedOverrideClips(
+            UnityEditor.Animations.AnimatorController controller)
+        {
+            var pending = new Stack<Motion>();
+            foreach (var layer in controller.layers)
+                foreach (var state in MeshProtectParameters.SyncedLayerStates(controller, layer))
+                    pending.Push(layer.GetOverrideMotion(state));
+
+            var visited = new HashSet<Motion>();
+            var clips = new HashSet<AnimationClip>();
+            while (pending.Count > 0)
+            {
+                var motion = pending.Pop();
+                if (motion == null || !visited.Add(motion)) continue;
+                if (motion is AnimationClip clip) clips.Add(clip);
+                else if (motion is UnityEditor.Animations.BlendTree tree)
+                    foreach (var child in tree.children) pending.Push(child.motion);
+            }
+            return clips.ToArray();
+        }
+
+        /// <summary>
         /// Re-point material references inside the FX layer's animation clips at this build's
         /// decode copies.
         ///
@@ -613,10 +793,9 @@ namespace MeshProtect
         /// So: every keyframe in the shipped FX that would put a material onto a DISPLACED
         /// sub-mesh is re-pointed at the decode copy of that material, converting it first if it
         /// never sat in a slot. Clips are cloned before they are touched unless this build already
-        /// owns them - the ones in the project stay exactly as they are. A swap this cannot
-        /// convert - somebody else's shader, an ignored material - is warned about by name,
-        /// because that toggle will show noise while the mesh is displaced and there is nothing
-        /// here that can prevent it.
+        /// owns them - the ones in the project stay exactly as they are. The preflight leaves
+        /// renderers with incompatible swaps original. Finding one here means the preflight and
+        /// the final controller disagree; stop rather than ship a displaced mesh without decode.
         ///
         /// Only the FX layer is rewritten: it is the layer this build owns a copy of, and it is
         /// where material swaps live. Swaps found anywhere else are warned about instead.
@@ -657,6 +836,70 @@ namespace MeshProtect
             if (displaced.Count == 0) return;
 
             int rewrote = 0;
+            var rewritten = new Dictionary<Motion, Motion>();
+            var visiting = new HashSet<Motion>();
+
+            bool BuildOwns(Object asset)
+            {
+                string path = AssetDatabase.GetAssetPath(asset);
+                return !string.IsNullOrEmpty(path) &&
+                       path.StartsWith(folder + "/", StringComparison.Ordinal);
+            }
+
+            // Material safety cannot depend on the optional name-obfuscation/tree-copy switches.
+            // Copy only external trees whose child references change, and share those copies
+            // across states. The original trees must never point into this build's temp folder.
+            Motion RewriteMotion(Motion motion)
+            {
+                if (motion == null) return null;
+                if (rewritten.TryGetValue(motion, out var cached)) return cached;
+                if (!visiting.Add(motion))
+                    throw new InvalidOperationException(
+                        $"Blend tree '{motion.name}' contains a cycle. Material swaps cannot be " +
+                        "rewritten safely; remove the circular motion reference before uploading.");
+
+                try
+                {
+                    Motion result = motion;
+                    if (motion is AnimationClip clip)
+                    {
+                        var replacement = RewriteClipMaterials(clip, settings, displaced,
+                                                               materialCache, variant, mac,
+                                                               effectiveMode, folder, report);
+                        if (replacement != null) { result = replacement; rewrote++; }
+                    }
+                    else if (motion is UnityEditor.Animations.BlendTree tree)
+                    {
+                        var children = tree.children;
+                        bool changed = false;
+                        for (int i = 0; i < children.Length; i++)
+                        {
+                            var replacement = RewriteMotion(children[i].motion);
+                            if (replacement == children[i].motion) continue;
+                            children[i].motion = replacement;
+                            changed = true;
+                        }
+
+                        if (changed)
+                        {
+                            var target = tree;
+                            if (!BuildOwns(tree))
+                            {
+                                target = new UnityEditor.Animations.BlendTree();
+                                EditorUtility.CopySerialized(tree, target);
+                                AssetDatabase.CreateAsset(target, AssetDatabase.GenerateUniqueAssetPath(
+                                    $"{folder}/{GeneratedName(tree.name, variant)}.asset"));
+                            }
+                            target.children = children;
+                            EditorUtility.SetDirty(target);
+                            result = target;
+                        }
+                    }
+                    rewritten[motion] = result;
+                    return result;
+                }
+                finally { visiting.Remove(motion); }
+            }
 
             foreach (var layer in descriptor.baseAnimationLayers)
             {
@@ -677,17 +920,16 @@ namespace MeshProtect
                 {
                     var slots = new List<KeyValuePair<AnimationClip, AnimationClip>>();
                     over.GetOverrides(slots);
+                    bool changed = false;
                     for (int i = 0; i < slots.Count; i++)
                     {
                         var playing = slots[i].Value != null ? slots[i].Value : slots[i].Key;
-                        var replacement = RewriteClipMaterials(playing, settings, displaced,
-                                                               materialCache, variant, mac,
-                                                               effectiveMode, folder, report);
-                        if (replacement == null) continue;
+                        var replacement = RewriteMotion(playing) as AnimationClip;
+                        if (replacement == playing) continue;
                         slots[i] = new KeyValuePair<AnimationClip, AnimationClip>(slots[i].Key, replacement);
-                        rewrote++;
+                        changed = true;
                     }
-                    if (rewrote > 0) over.ApplyOverrides(slots);
+                    if (changed) over.ApplyOverrides(slots);
                     continue;
                 }
 
@@ -698,18 +940,17 @@ namespace MeshProtect
                 {
                     foreach (var state in AllStates(controllerLayer.stateMachine))
                     {
-                        if (state.motion is AnimationClip clip)
-                        {
-                            var replacement = RewriteClipMaterials(clip, settings, displaced,
-                                                                   materialCache, variant, mac,
-                                                                   effectiveMode, folder, report);
-                            if (replacement != null) { state.motion = replacement; rewrote++; }
-                        }
-                        else if (state.motion is UnityEditor.Animations.BlendTree tree)
-                        {
-                            rewrote += RewriteTreeMaterials(tree, settings, displaced, materialCache,
-                                                            variant, mac, effectiveMode, folder, report);
-                        }
+                        if (state == null) continue;
+                        var replacement = RewriteMotion(state.motion);
+                        if (replacement == state.motion) continue;
+                        if (!BuildOwns(state))
+                            throw new InvalidOperationException(
+                                $"FX state '{state.name}' lives outside this build's controller copy. " +
+                                "Its material swap needs a different motion, but changing the shared " +
+                                "state would modify your project. Store the state in its controller " +
+                                "before uploading.");
+                        state.motion = replacement;
+                        EditorUtility.SetDirty(state);
                     }
                 }
             }
@@ -730,39 +971,9 @@ namespace MeshProtect
                 foreach (var state in AllStates(child.stateMachine)) yield return state;
         }
 
-        private static int RewriteTreeMaterials(UnityEditor.Animations.BlendTree tree,
-                                                MeshProtectRoot settings,
-                                                Dictionary<string, bool[]> displaced,
-                                                Dictionary<Material, Material> materialCache,
-                                                MeshProtectVariant variant, uint mac,
-                                                MeshProtectRoot.DisplacementMode effectiveMode,
-                                                string folder, Report report)
-        {
-            if (tree == null) return 0;
-            int rewrote = 0;
-            var children = tree.children;
-            for (int i = 0; i < children.Length; i++)
-            {
-                if (children[i].motion is AnimationClip clip)
-                {
-                    var replacement = RewriteClipMaterials(clip, settings, displaced, materialCache,
-                                                           variant, mac, effectiveMode, folder, report);
-                    if (replacement != null) { children[i].motion = replacement; rewrote++; }
-                }
-                else if (children[i].motion is UnityEditor.Animations.BlendTree inner)
-                {
-                    rewrote += RewriteTreeMaterials(inner, settings, displaced, materialCache,
-                                                    variant, mac, effectiveMode, folder, report);
-                }
-            }
-            if (rewrote > 0) tree.children = children;
-            return rewrote;
-        }
-
         /// <summary>
-        /// Returns the clip to use in place of <paramref name="clip"/> - a clone with its material
-        /// keyframes re-pointed - or null when nothing in it needed changing. The input clip is
-        /// only ever edited if this build's folder already owns it.
+        /// Returns the edited clip (which may be the input) or null when no keyframe changed.
+        /// External clips are cloned; only clips in this build's folder are edited in place.
         /// </summary>
         private static AnimationClip RewriteClipMaterials(AnimationClip clip, MeshProtectRoot settings,
                                                           Dictionary<string, bool[]> displaced,
@@ -806,13 +1017,10 @@ namespace MeshProtect
 
                     if (settings.ignoredMaterials.Contains(material))
                     {
-                        report.warnings.Add(
+                        throw new InvalidOperationException(
                             $"Animation '{clip.name}' swaps ignored material '{material.name}' onto " +
-                            $"'{binding.path}', whose mesh is displaced. When that toggle plays, " +
-                            "this part shows as noise whatever password is entered - an ignored " +
-                            "material carries no decode. Take it off the ignore list, or add every " +
-                            "material of that renderer so its mesh is left alone.");
-                        continue;
+                            $"'{binding.path}' after material preflight. The build was stopped " +
+                            "because this displaced mesh would have no decode when the animation plays.");
                     }
 
                     if (!materialCache.TryGetValue(material, out var converted))
@@ -826,12 +1034,11 @@ namespace MeshProtect
 
                     if (converted == null)
                     {
-                        report.warnings.Add(
+                        throw new InvalidOperationException(
                             $"Animation '{clip.name}' swaps '{material.name}' onto " +
                             $"'{binding.path}', whose mesh is displaced, and that material cannot " +
-                            "carry the decode (the reason is in the warning above). When that " +
-                            "toggle plays, this part shows as noise whatever password is entered.");
-                        continue;
+                            "carry the decode after material preflight. The build was stopped " +
+                            "before this broken material swap could be uploaded.");
                     }
 
                     keys[i].value = converted;
@@ -858,7 +1065,7 @@ namespace MeshProtect
             foreach (var (binding, keys) in edits)
                 AnimationUtility.SetObjectReferenceCurve(target, binding, keys);
 
-            return ReferenceEquals(target, clip) ? null : target;
+            return target;
         }
 
         private static int ParseMaterialSlot(string propertyName)
@@ -1957,44 +2164,19 @@ namespace MeshProtect
                 return null;
             }
 
-            // A tessellating slot on a family older than the decode that can handle one.
-            //
-            // The ten Hidden/<family>/Tessellation/* shaders decode in vertTess, before the
-            // tessellator runs. A family generated before that decoded in vert(), which the domain
-            // shader calls on interpolated appdata - and vertex identity is the raw bit pattern of
-            // UV0, so every vertex the tessellator invents carries an identity that never existed
-            // and lands somewhere arbitrary. Right password, broken surface.
-            //
-            // Nothing else in this build can see it. The family is COMPLETE - the old containers
-            // all compiled and there are as many of them as ever - so FamilyIsComplete passes it;
-            // the GPU check compiles a probe with no tessellation stage; and the build never
-            // regenerates, deliberately - importing shaders mid-upload would force an
-            // AssetDatabase refresh inside the SDK build; see the note above the family lookup.
-            // The marker is what knows, and this is the one place that asks.
-            //
-            // Refused rather than warned about, because what a warning would let through is not an
-            // unprotected sub-mesh but a broken one. Left alone it ships unprotected and
-            // undisplaced - which is exactly what this tool already tells authors happens to a
-            // tessellating material, over in ConvertHostMaterial.
-            //
-            // Read off the CONVERTED shader on purpose: "Hidden/<family>/Tessellation/..." is a
-            // name this package emits. Stock lilToon calls the same thing
-            // "Hidden/lilToonTessellation", which IsTessellating does not match and need not.
-            if (MeshProtectLilHost.IsTessellating(copy.shader.name) &&
-                !MeshProtectShaderGen.FamilyIsCurrent(settings, variant))
+            // Old families lack the lock guard that runs before outline/AudioLink/fur effects.
+            // Counting compiled variants cannot establish that guard is present. Regeneration
+            // stays outside the upload because importing shaders here interrupts the SDK build.
+            if (!MeshProtectShaderGen.FamilyIsCurrent(settings, variant))
             {
                 AssetDatabase.DeleteAsset(path);
                 report.warnings.Add(
-                    $"'{source.name}' is a tessellating lilToon material, and this avatar's " +
-                    $"shader family '{variant.shaderName}' is not the one this version of the " +
-                    "tool generates - either it predates this version, or its generated folder is " +
-                    "incomplete or was never written. Only the current family decodes a " +
-                    "tessellated surface early enough; on any other one the vertices tessellation " +
-                    "invents get pushed somewhere arbitrary and the surface breaks up even with " +
-                    "the right password. That sub-mesh ships UNPROTECTED and intact instead. " +
+                    $"'{source.name}' needs this version's protection shader family " +
+                    $"'{variant.shaderName}'. Its generated files are older, incomplete or missing; " +
+                    "older families can show outline or AudioLink geometry while locked. " +
+                    "This material slot stays UNPROTECTED and intact instead. " +
                     "Press 'Rebuild Shader', under 'Advanced' on the Mesh Protect Root " +
-                    "component, and upload again - if the Console reports a shader compile error, " +
-                    "that is the cause and fixing it clears this too.");
+                    "component, before uploading. Your password does not need to change.");
                 return null;
             }
 

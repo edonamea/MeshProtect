@@ -247,8 +247,13 @@ namespace MeshProtect
 
             CompensateBlendShapes(source, mesh, count, tangentMode, compTangent, compNormal);
 
-            // Bounds grew or shrank by the displacement; let Unity recompute so culling stays sane.
+            // CPU culling must cover both the displaced mesh and its shader-restored shape.
+            // Keep the source bounds too, including any extra room supplied by the author.
             mesh.RecalculateBounds();
+            var bounds = mesh.bounds;
+            bounds.Encapsulate(source.bounds.min);
+            bounds.Encapsulate(source.bounds.max);
+            mesh.bounds = bounds;
 
             return new Result { mesh = mesh, warning = warning };
         }

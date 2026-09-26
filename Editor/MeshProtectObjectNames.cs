@@ -76,6 +76,9 @@ namespace MeshProtect
 
         internal sealed class Options
         {
+            /// <summary>External trees are traversed by the rewrite only after being copied.</summary>
+            public bool copySeparateBlendTrees = true;
+
             /// <summary>Controllers whose clips this upload rewrites.</summary>
             public readonly HashSet<AnimatorController> rewritable = new HashSet<AnimatorController>();
 
@@ -136,10 +139,26 @@ namespace MeshProtect
                 {
                     if (layer.isDefault || layer.animatorController == null) continue;
 
-                    var controller = layer.animatorController as AnimatorController
-                                     ?? (layer.animatorController as AnimatorOverrideController)
-                                        ?.runtimeAnimatorController as AnimatorController;
-                    if (controller == null || options.replaced.Contains(controller)) continue;
+                    var runtime = layer.animatorController;
+                    var controller = runtime as AnimatorController;
+                    if (controller == null)
+                    {
+                        // An override is not adopted with its base controller. Its replacement
+                        // clips can address objects absent from the base clips, so inspect the
+                        // effective clips even when another layer adopts that same base.
+                        foreach (var clip in runtime.animationClips)
+                            SurveyClipPaths(clip, Scope.Foreign, layer.type + " override", Add);
+
+                        var seen = new HashSet<RuntimeAnimatorController>();
+                        while (runtime != null && seen.Add(runtime))
+                        {
+                            if (runtime is AnimatorController underlying)
+                                SurveyController(underlying, layer.type + " (overridden)", false, false, Add);
+                            runtime = (runtime as AnimatorOverrideController)?.runtimeAnimatorController;
+                        }
+                        continue;
+                    }
+                    if (options.replaced.Contains(controller)) continue;
 
                     // The same question the parameter engine asks, and for the same reason. This
                     // survey hands out Owned on the strength of the controller alone, while the
@@ -152,8 +171,34 @@ namespace MeshProtect
                                 !MeshProtectParameters.StructureLivesElsewhere(
                                     controller, AssetDatabase.GetAssetPath(controller));
 
-                    SurveyController(controller, layer.type.ToString(), ours, Add);
+                    SurveyController(controller, layer.type.ToString(), ours,
+                                     options.copySeparateBlendTrees, Add);
                 }
+            }
+
+            // Independent animators and legacy animations keep their own clips. Their paths are
+            // relative to their component, but the name map is global, so every path segment they
+            // use must retain its name too. Include inactive objects and override-controller clips.
+            foreach (var animator in root.GetComponentsInChildren<Animator>(true))
+            {
+                if (animator.transform == root || animator.runtimeAnimatorController == null) continue;
+                var runtime = animator.runtimeAnimatorController;
+                foreach (var clip in runtime.animationClips)
+                    SurveyClipPaths(clip, Scope.Foreign, "Animator on " + animator.name, Add);
+
+                var seen = new HashSet<RuntimeAnimatorController>();
+                while (runtime != null && seen.Add(runtime))
+                {
+                    if (runtime is AnimatorController controller)
+                        SurveyController(controller, "Animator on " + animator.name, false, false, Add);
+                    runtime = (runtime as AnimatorOverrideController)?.runtimeAnimatorController;
+                }
+            }
+            foreach (var animation in root.GetComponentsInChildren<Animation>(true))
+            {
+                SurveyClipPaths(animation.clip, Scope.Foreign, "Animation on " + animation.name, Add);
+                foreach (AnimationState state in animation)
+                    SurveyClipPaths(state.clip, Scope.Foreign, "Animation on " + animation.name, Add);
             }
 
             var findings = found.Values.ToList();
@@ -164,17 +209,29 @@ namespace MeshProtect
         }
 
         private static void SurveyController(AnimatorController controller, string label, bool ours,
+                                             bool copySeparateBlendTrees,
                                              Action<string, Scope, string> add)
         {
+            string ownerPath = AssetDatabase.GetAssetPath(controller);
             var machines = new HashSet<AnimatorStateMachine>();
-            var motions = new HashSet<Motion>();
+            var motions = new HashSet<(Motion motion, bool ours)>();
 
             foreach (var layer in controller.layers)
             {
                 SurveyMask(layer.avatarMask, label + "/" + layer.name, add);
 
-                SurveyStateMachine(layer.stateMachine, label + "/" + layer.name, ours, machines,
-                                   motions, add);
+                SurveyStateMachine(layer.stateMachine, label + "/" + layer.name, ours, ownerPath,
+                                   copySeparateBlendTrees, machines, motions, add);
+
+                // The rewrite walks states, not the synchronized layer's override tables.
+                foreach (var state in MeshProtectParameters.SyncedLayerStates(controller, layer))
+                {
+                    string where = label + "/" + layer.name + " override " + state.name;
+                    SurveyMotion(layer.GetOverrideMotion(state), where, false, ownerPath, false,
+                                 motions, add);
+                    foreach (var behaviour in layer.GetOverrideBehaviours(state) ?? new StateMachineBehaviour[0])
+                        SurveyBehaviour(behaviour, where, false, ownerPath, add);
+                }
             }
         }
 
@@ -229,13 +286,15 @@ namespace MeshProtect
         }
 
         private static void SurveyStateMachine(AnimatorStateMachine machine, string where, bool ours,
+                                               string ownerPath, bool copySeparateBlendTrees,
                                                HashSet<AnimatorStateMachine> machines,
-                                               HashSet<Motion> motions,
+                                               HashSet<(Motion motion, bool ours)> motions,
                                                Action<string, Scope, string> add)
         {
             if (machine == null || !machines.Add(machine)) return;
 
-            foreach (var behaviour in machine.behaviours) SurveyBehaviour(behaviour, where, ours, add);
+            foreach (var behaviour in machine.behaviours)
+                SurveyBehaviour(behaviour, where, ours, ownerPath, add);
 
             foreach (var child in machine.states)
             {
@@ -243,27 +302,37 @@ namespace MeshProtect
                 if (state == null) continue;
 
                 string stateWhere = where + "/" + state.name;
-                foreach (var behaviour in state.behaviours) SurveyBehaviour(behaviour, stateWhere, ours, add);
-                SurveyMotion(state.motion, stateWhere, ours, motions, add);
+                foreach (var behaviour in state.behaviours)
+                    SurveyBehaviour(behaviour, stateWhere, ours, ownerPath, add);
+                SurveyMotion(state.motion, stateWhere, ours, ownerPath, copySeparateBlendTrees, motions, add);
             }
 
             foreach (var child in machine.stateMachines)
                 SurveyStateMachine(child.stateMachine, where + "/" + SafeName(child.stateMachine), ours,
-                                   machines, motions, add);
+                                   ownerPath, copySeparateBlendTrees, machines, motions, add);
         }
 
         private static string SafeName(AnimatorStateMachine machine) =>
             machine == null ? "(null)" : machine.name;
 
-        private static void SurveyMotion(Motion motion, string where, bool ours, HashSet<Motion> seen,
+        private static void SurveyMotion(Motion motion, string where, bool ours, string ownerPath,
+                                         bool copySeparateBlendTrees,
+                                         HashSet<(Motion motion, bool ours)> seen,
                                          Action<string, Scope, string> add)
         {
-            if (motion == null || !seen.Add(motion)) return;
+            if (motion == null) return;
+
+            // An uncopied external tree stops the rewrite before any of its descendants. Survey
+            // shared clips in both contexts so an owned occurrence cannot hide an untouched one.
+            if (motion is BlendTree && !copySeparateBlendTrees && !Belongs(motion, ownerPath, null))
+                ours = false;
+            if (!seen.Add((motion, ours))) return;
 
             if (motion is BlendTree tree)
             {
                 foreach (var child in tree.children)
-                    SurveyMotion(child.motion, where + "/tree " + tree.name, ours, seen, add);
+                    SurveyMotion(child.motion, where + "/tree " + tree.name, ours, ownerPath,
+                                 copySeparateBlendTrees, seen, add);
                 return;
             }
 
@@ -277,9 +346,16 @@ namespace MeshProtect
             // Both kinds. An object reference curve - a material swap, a mesh swap - carries a path
             // exactly like a float curve does, and rewriting one and not the other leaves half the
             // clip pointing at a name that no longer exists.
+            SurveyClipPaths(clip, scope, where + "/clip " + clip.name, add);
+        }
+
+        private static void SurveyClipPaths(AnimationClip clip, Scope scope, string where,
+                                            Action<string, Scope, string> add)
+        {
+            if (clip == null) return;
             foreach (var binding in AnimationUtility.GetCurveBindings(clip)
                                                     .Concat(AnimationUtility.GetObjectReferenceCurveBindings(clip)))
-                AddPath(binding.path, scope, where + "/clip " + clip.name, add);
+                AddPath(binding.path, scope, where, add);
         }
 
         /// <summary>
@@ -287,6 +363,7 @@ namespace MeshProtect
         /// RemapPathsInStateBehaviour handles exactly this field and nothing else.
         /// </summary>
         private static void SurveyBehaviour(StateMachineBehaviour behaviour, string where, bool ours,
+                                            string ownerPath,
                                             Action<string, Scope, string> add)
         {
             if (behaviour == null) return;
@@ -296,7 +373,8 @@ namespace MeshProtect
                                                      BindingFlags.Public | BindingFlags.Instance);
             if (field == null || field.FieldType != typeof(string)) return;
 
-            AddPath((string)field.GetValue(behaviour), ours ? Scope.Owned : Scope.Foreign,
+            var scope = ours && Belongs(behaviour, ownerPath, null) ? Scope.Owned : Scope.Foreign;
+            AddPath((string)field.GetValue(behaviour), scope,
                     where + " PlayAudio", add);
         }
 
@@ -477,14 +555,16 @@ namespace MeshProtect
             if (machine == null || !machines.Add(machine)) return;
 
             if (Belongs(machine, ownerPath, folder))
-                foreach (var behaviour in machine.behaviours) RewriteBehaviour(behaviour, map, ref rewrites);
+                foreach (var behaviour in machine.behaviours)
+                    RewriteBehaviour(behaviour, ownerPath, folder, map, ref rewrites);
 
             foreach (var child in machine.states)
             {
                 var state = child.state;
                 if (state == null || !Belongs(state, ownerPath, folder)) continue;
 
-                foreach (var behaviour in state.behaviours) RewriteBehaviour(behaviour, map, ref rewrites);
+                foreach (var behaviour in state.behaviours)
+                    RewriteBehaviour(behaviour, ownerPath, folder, map, ref rewrites);
                 RewriteMotion(state.motion, ownerPath, folder, map, motions, ref rewrites);
             }
 
@@ -545,10 +625,10 @@ namespace MeshProtect
             }
         }
 
-        private static void RewriteBehaviour(StateMachineBehaviour behaviour,
+        private static void RewriteBehaviour(StateMachineBehaviour behaviour, string ownerPath, string folder,
                                              IDictionary<string, string> map, ref int rewrites)
         {
-            if (behaviour == null) return;
+            if (!Belongs(behaviour, ownerPath, folder)) return;
             if (behaviour.GetType().Name.IndexOf("PlayAudio", StringComparison.Ordinal) < 0) return;
 
             var field = behaviour.GetType().GetField("SourcePath",

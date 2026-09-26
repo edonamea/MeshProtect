@@ -27,6 +27,7 @@ namespace MeshProtect
             public double worstError;
             public string worstMesh = "-";
             public double maxDisplacement;
+            public long verticesMeasured;
             public double RatioPercent => maxDisplacement > 1e-12 ? worstError / maxDisplacement * 100 : 0;
         }
 
@@ -78,8 +79,9 @@ namespace MeshProtect
                 }
                 AssetDatabase.CreateFolder(outputRoot, "_SkinCheck");
 
-                copy = UnityEngine.Object.Instantiate(settings.gameObject);
-                copy.name = settings.gameObject.name + " (skin check)";
+                var source = SourceAvatar(settings);
+                copy = UnityEngine.Object.Instantiate(source);
+                copy.name = source.name + " (skin check)";
                 copy.SetActive(true);
 
                 // A button the author presses to look at their own avatar, so it is a likely first
@@ -162,7 +164,8 @@ namespace MeshProtect
         {
             var result = new Result();
 
-            var sourceAnimator = settings.GetComponent<Animator>();
+            var source = SourceAvatar(settings);
+            var sourceAnimator = source.GetComponent<Animator>();
             if (sourceAnimator == null || !sourceAnimator.isHuman)
             {
                 result.skipReason = "The avatar is not Humanoid, so no standard joints can be posed. " +
@@ -172,7 +175,6 @@ namespace MeshProtect
 
             uint key = MeshProtectCipher.PackDigits(settings.keyDigits, settings.variant);
             var variant = settings.variant;
-            var source = settings.gameObject;
 
             var restore = new List<(Transform t, Quaternion rotation, Vector3 scale)>();
             foreach (var avatar in new[] { source, protectedCopy })
@@ -188,7 +190,14 @@ namespace MeshProtect
                 {
                     ApplyPose(source, pose);
                     ApplyPose(protectedCopy, pose);
-                    result.poses.Add(Measure(pose.name, source, protectedCopy, mode, key, variant));
+                    var measured = Measure(pose.name, source, protectedCopy, mode, key, variant);
+                    if (measured.verticesMeasured == 0)
+                    {
+                        result.skipReason = "No protected skinned vertices could be compared with " +
+                                            "the original avatar. Nothing was measured.";
+                        return result;
+                    }
+                    result.poses.Add(measured);
                 }
                 result.ran = true;
             }
@@ -299,6 +308,41 @@ namespace MeshProtect
 
         // ------------------------------------------------------------------ measurement
 
+        private static GameObject SourceAvatar(MeshProtectRoot settings)
+        {
+#if LILMP_VRCSDK3_AVATARS
+            var descriptor = settings.GetComponentInParent<
+                VRC.SDK3.Avatars.Components.VRCAvatarDescriptor>(true);
+            if (descriptor != null) return descriptor.gameObject;
+#endif
+            return settings.gameObject;
+        }
+
+        private static SkinnedMeshRenderer SourceRenderer(SkinnedMeshRenderer renderer,
+                                                           Transform source, Transform copy)
+        {
+            // Apply changes names, but keeps the cloned hierarchy and component order intact.
+            // Sibling indices also distinguish duplicate names, which Transform.Find cannot.
+            var indices = new Stack<int>();
+            var current = renderer.transform;
+            while (current != copy)
+            {
+                if (current == null) return null;
+                indices.Push(current.GetSiblingIndex());
+                current = current.parent;
+            }
+            foreach (int index in indices)
+            {
+                if (index >= source.childCount) return null;
+                source = source.GetChild(index);
+            }
+            int componentIndex = Array.IndexOf(
+                renderer.GetComponents<SkinnedMeshRenderer>(), renderer);
+            var originals = source.GetComponents<SkinnedMeshRenderer>();
+            return componentIndex >= 0 && componentIndex < originals.Length
+                ? originals[componentIndex] : null;
+        }
+
         private static PoseResult Measure(string poseName, GameObject source, GameObject copy,
                                           MeshProtectRoot.DisplacementMode mode,
                                           uint key, MeshProtectVariant variant)
@@ -318,12 +362,8 @@ namespace MeshProtect
                     if (!protectedRenderer.sharedMaterials.Any(
                             m => MeshProtectPipeline.IsProtectShader(m, variant.shaderName))) continue;
 
-                    string path = AnimationUtility.CalculateTransformPath(
-                        protectedRenderer.transform, copy.transform);
-                    var referenceTransform = string.IsNullOrEmpty(path)
-                        ? source.transform : source.transform.Find(path);
-                    var referenceRenderer = referenceTransform != null
-                        ? referenceTransform.GetComponent<SkinnedMeshRenderer>() : null;
+                    var referenceRenderer = SourceRenderer(protectedRenderer,
+                                                           source.transform, copy.transform);
                     if (referenceRenderer == null || referenceRenderer.sharedMesh == null) continue;
 
                     referenceRenderer.BakeMesh(referenceBake);
@@ -368,6 +408,7 @@ namespace MeshProtect
             }
 
             result.meanError = counted > 0 ? sum / counted : 0;
+            result.verticesMeasured = counted;
             return result;
         }
 

@@ -1908,19 +1908,10 @@ namespace MPTest
         }
 
         /// <summary>
-        /// An existing avatar updates, and its family still decodes tessellation one stage late.
-        ///
-        /// Nothing regenerates a family except two manual buttons - the build deliberately never
-        /// does - and FamilyIsComplete counts shaders, so a family written by an older release
-        /// passes every preflight it meets. Left alone, a tessellating material is converted onto
-        /// it, displaced, and then decoded in the domain shader on an interpolated vertex identity
-        /// that never existed: invisible while locked, shattered when unlocked. Refused rather
-        /// than warned about, because what a warning would let through is not an unprotected
-        /// sub-mesh but a broken one.
-        ///
-        /// The avatar carries an ordinary lilToon renderer too, so the build does not end at
-        /// "nothing was protected". What is measured is a refusal scoped to one renderer, not a
-        /// refusal to build.
+        /// An existing avatar updates while its generated family is still from an older release.
+        /// Old families lack the lock guard before outline/AudioLink effects, so ordinary lilToon
+        /// and tessellation must both be refused until Rebuild Shader runs. With every material
+        /// on that stale family, a batch build must stop without changing any source mesh/material.
         ///
         /// Run twice, and the second arm is the one that was missing: a guard that refused
         /// EVERYBODY would pass a stale-only test while breaking every existing tessellation user.
@@ -1947,10 +1938,8 @@ namespace MPTest
                 var smr = extra.AddComponent<SkinnedMeshRenderer>();
                 var mesh = BuildTestMesh(16);
 
-                // Two sub-meshes on ONE renderer - the realistic shape of the failure this test
-                // exists for (a face material beside body materials), and the only shape that
-                // exercises the per-slot counter: a renderer with nothing protectable is dropped
-                // whole and counted by skippedRenderers instead.
+                // Both a mixed renderer and a separate ordinary renderer must stay unchanged when
+                // the family is stale. The current-family arm must still protect all three slots.
                 var allTris = mesh.GetTriangles(0);
                 int half = (allTris.Length / 6) * 3;
                 mesh.subMeshCount = 2;
@@ -1970,8 +1959,6 @@ namespace MPTest
                     new Material(lilToon) { name = "TessNeighbourMat" },
                     new Material(tess) { name = "StaleTessMat" },
                 };
-                var tessOnlyVerts = new HashSet<int>(allTris.Skip(half));
-
                 // Age the marker to exactly what the previous release wrote: the same signature
                 // without the family format field this one puts in front of it.
                 string marker = Path.Combine(
@@ -1995,28 +1982,19 @@ namespace MPTest
                     File.WriteAllText(marker, current.Substring(semicolon + 1));
                 }
 
-                var before = mesh.vertices;
+                var originalRenderers = new[] { (SkinnedMeshRenderer)plain, smr };
+                var originalMeshes = originalRenderers.Select(r => r.sharedMesh).ToArray();
+                var meshSnapshots = originalMeshes.Select(m => EditorJsonUtility.ToJson(m)).ToArray();
+                var originalMaterials = originalRenderers.Select(r => r.sharedMaterials).ToArray();
+                var materialSnapshots = originalMaterials
+                    .Select(materials => materials.Select(m => EditorJsonUtility.ToJson(m)).ToArray())
+                    .ToArray();
                 bool ok = new MeshProtectBuildHook().OnPreprocessAvatar(root);
 
                 var landedTess = smr.sharedMaterials.Length > 1 ? smr.sharedMaterials[1] : null;
-                bool tessRefused = landedTess != null && landedTess.shader == tess;
                 var landedNeighbour = smr.sharedMaterials.Length > 0 ? smr.sharedMaterials[0] : null;
                 bool neighbourProtected = landedNeighbour != null &&
                     MeshProtectPipeline.IsProtectShader(landedNeighbour, settings.variant.shaderName);
-
-                // Undisplaced is judged on the refused sub-mesh's OWN vertices - the renderer is
-                // kept and its protected half is displaced, which is the whole point. Vertices
-                // shared across the seam are skipped with the refused side, by design.
-                var afterMesh = smr.sharedMesh;
-                var after = afterMesh == null ? new Vector3[0] : afterMesh.vertices;
-                bool undisplaced = after.Length == before.Length;
-                bool neighbourDisplaced = false;
-                for (int i = 0; undisplaced && i < after.Length; i++)
-                {
-                    bool moved = (after[i] - before[i]).sqrMagnitude >= 1e-16f;
-                    if (tessOnlyVerts.Contains(i)) undisplaced = !moved;
-                    else if (moved) neighbourDisplaced = true;
-                }
 
                 var landedPlain = plain.sharedMaterials.Length > 0 ? plain.sharedMaterials[0] : null;
                 bool plainProtected = landedPlain != null &&
@@ -2024,51 +2002,47 @@ namespace MPTest
 
                 if (age)
                 {
-                    Check(ok && tessRefused && undisplaced && neighbourProtected &&
-                          neighbourDisplaced && plainProtected,
-                          "stale-family/" + label + "/tessellation-is-refused-not-shattered",
-                          !ok ? "the build STOPPED - a stale family must cost one sub-mesh, not the upload"
-                          : !tessRefused
-                              ? "the tessellating material was moved onto the family anyway, which " +
-                                "is the shattered avatar this check exists to prevent"
-                          : !undisplaced
-                              ? "refused, but its vertices had already been displaced - it ships " +
-                                "unprotected AND broken, the worst of both"
-                          : !neighbourProtected || !neighbourDisplaced
-                              ? "the refused slot took its NEIGHBOUR down with it - the other " +
-                                "sub-mesh on the same renderer must stay protected and displaced"
-                          : !plainProtected
-                              ? "the ordinary lilToon material did not convert either, so the " +
-                                "refusal is not scoped and this proves nothing about tessellation"
-                              : "built, tessellating sub-mesh refused and undisplaced beside a " +
-                                "protected neighbour on the same renderer");
+                    Check(!ok, "stale-family/" + label + "/batch-build-stops",
+                          !ok ? "the batch build stopped because no material can use the stale family"
+                              : "the build accepted an avatar whose only generated family is stale");
+
+                    bool meshesUnchanged = Enumerable.Range(0, originalRenderers.Length).All(i =>
+                        originalRenderers[i].sharedMesh == originalMeshes[i] &&
+                        EditorJsonUtility.ToJson(originalMeshes[i]) == meshSnapshots[i]);
+                    Check(meshesUnchanged, "stale-family/" + label + "/all-meshes-unchanged",
+                          meshesUnchanged ? "both renderers retain the original meshes and mesh data"
+                                          : "a refused build replaced or edited an original mesh");
+
+                    bool materialsUnchanged = Enumerable.Range(0, originalRenderers.Length).All(i =>
+                        originalRenderers[i].sharedMaterials.SequenceEqual(originalMaterials[i]) &&
+                        Enumerable.Range(0, originalMaterials[i].Length).All(slot =>
+                            EditorJsonUtility.ToJson(originalMaterials[i][slot]) ==
+                            materialSnapshots[i][slot]));
+                    Check(materialsUnchanged, "stale-family/" + label + "/all-materials-unchanged",
+                          materialsUnchanged ? "all three slots retain their original material data"
+                                             : "a refused build replaced or edited an original material");
 
                     // The refusal is only recoverable if the author is told which button to press,
                     // and last-upload.txt is where they read it. Asserting the behaviour without
                     // the message would let the half that makes it survivable be deleted silently.
                     string reportPath = MeshProtectShaderGen.OutputRoot(settings) + "/last-upload.txt";
                     string reportText = File.Exists(reportPath) ? File.ReadAllText(reportPath) : "";
-                    bool told = reportText.Contains("StaleTessMat") &&
+                    bool told = originalMaterials.SelectMany(materials => materials)
+                                    .All(material => reportText.Contains(material.name)) &&
                                 reportText.Contains("Rebuild Shader");
 
-                    // The refusal is per-slot on a kept renderer, which is exactly the shape the
-                    // summary line used to hide - it said "Protected N mesh(es)" with no
-                    // qualifier. The counter exists so the one line an author reads admits it.
-                    bool counted = reportText.Contains("1 sub-mesh(es) on 1 renderer(s)");
-                    Check(counted, "stale-family/" + label + "/the-summary-line-admits-it",
-                          counted ? "the summary counts the refused sub-mesh"
-                                  : "last-upload.txt's summary does not count the refused " +
-                                    "sub-mesh - the author reads \"Protected N mesh(es)\" and " +
-                                    "nothing else, which is how a readable face ships unnoticed");
+                    bool stopped = reportText.Contains("NOTHING WAS PROTECTED") &&
+                                   reportText.Contains("STOPPED");
+                    Check(stopped, "stale-family/" + label + "/the-summary-line-admits-it",
+                          stopped ? "the summary says nothing was protected and the upload stopped"
+                                  : "last-upload.txt does not disclose the stopped, unprotected build");
 
                     Check(told, "stale-family/" + label + "/the-author-is-told-which-button",
-                          told ? "last-upload.txt names the material and the button"
+                          told ? "last-upload.txt names every refused material and the rebuild button"
                                : reportText.Length == 0
                                    ? "no last-upload.txt at " + reportPath
-                                   : "last-upload.txt does not name both the material and " +
-                                     "'Rebuild Shader', so the refusal is unrecoverable in " +
-                                     "practice: the author sees a sub-mesh go unprotected with " +
-                                     "nothing saying it is one click away");
+                                   : "last-upload.txt does not name every refused material and " +
+                                     "'Rebuild Shader', so the author cannot identify the recovery action");
                 }
                 else
                 {

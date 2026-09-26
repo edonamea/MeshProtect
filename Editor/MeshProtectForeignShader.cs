@@ -314,55 +314,10 @@ namespace MeshProtect
                 if (seen.Add(material.shader)) found.Add(material.shader);
             }
 
-            foreach (var renderer in avatar.GetComponentsInChildren<Renderer>(true))
-            foreach (var material in renderer.sharedMaterials)
+            foreach (var material in MeshProtectMaterialDiscovery.Collect(avatar))
                 Consider(material);
-
-            // A material can reach the avatar through a wardrobe toggle alone, never sitting in a
-            // renderer's slot in the scene. RewriteClipMaterials converts those too, so a foreign
-            // one there needs a graft like any other - but this survey walked renderers only, so
-            // none was ever prepared: the material shipped unprotected, and the warning naming it
-            // sent the author to 'Rebuild Shader', which looks in this same place and would not
-            // have found it either.
-#if LILMP_VRCSDK3_AVATARS
-            foreach (var clip in ClipsOn(avatar))
-            foreach (var binding in AnimationUtility.GetObjectReferenceCurveBindings(clip))
-            {
-                if (!binding.propertyName.StartsWith("m_Materials", StringComparison.Ordinal))
-                    continue;
-                // Guarded the way MeshProtectPipeline does it on the same call. The null is
-                // documented, this survey only ever produces warnings, and an exception escaping
-                // from here would surface instead as a REFUSED upload reading "Object reference
-                // not set to an instance of an object".
-                var keys = AnimationUtility.GetObjectReferenceCurve(clip, binding);
-                if (keys == null) continue;
-                foreach (var key in keys)
-                    Consider(key.value as Material);
-            }
-#endif
             return found;
         }
-
-#if LILMP_VRCSDK3_AVATARS
-        /// <summary>Every clip the avatar's own layers can play.</summary>
-        private static IEnumerable<AnimationClip> ClipsOn(GameObject avatar)
-        {
-            var descriptor =
-                avatar.GetComponentInParent<VRC.SDK3.Avatars.Components.VRCAvatarDescriptor>()
-                ?? avatar.GetComponentInChildren<VRC.SDK3.Avatars.Components.VRCAvatarDescriptor>(true);
-            if (descriptor == null) yield break;
-
-            var empty = new VRC.SDK3.Avatars.Components.VRCAvatarDescriptor.CustomAnimLayer[0];
-            foreach (var layer in (descriptor.baseAnimationLayers ?? empty)
-                                  .Concat(descriptor.specialAnimationLayers ?? empty))
-            {
-                var controller = layer.animatorController;
-                if (controller == null) continue;
-                foreach (var clip in controller.animationClips)
-                    if (clip != null) yield return clip;
-            }
-        }
-#endif
 
         // ------------------------------------------------------------------ the file set
 
@@ -599,18 +554,24 @@ namespace MeshProtect
                 entry.file.text = entry.file.text.Insert(entry.bodyStart, call);
             }
 
+            // A vertex-only collapse can be expanded again by the host's outline, AudioLink
+            // or geometry stage. Discard every locked fragment, including shadow/depth/stencil
+            // passes, before the host writes anything. Refuse if any declared entry is missing.
+            var decodeFiles = new HashSet<GraftFile>(entries.Select(e => e.file));
+            if (!PatchFragmentGuards(files, shader, decodeFiles, out why)) return false;
+
             // The decode has to be declared before the functions that call it, and every pass is
             // its own compilation unit. Where that declaration goes depends on the file:
             //
             //   .cginc/.hlsl - the top of the file. It is already inside a program block by the
             //                  time it is included.
-            //   .shader      - just after each CGPROGRAM/HLSLPROGRAM. The top of a .shader is
+            //   .shader      - just after each program/include block. The top of a .shader is
             //                  ShaderLab, not HLSL, and an #include out there does not compile -
             //                  which matters because Poiyomi keeps its vertex functions in the
             //                  .shader itself.
             //
             // The include guard makes the overlap between the two harmless.
-            foreach (var file in entries.Select(e => e.file).Distinct())
+            foreach (var file in decodeFiles)
             {
                 string include = "#include \"" +
                                  Relative(Path.GetDirectoryName(file.relative), DecodeInclude) +
@@ -619,7 +580,7 @@ namespace MeshProtect
                 if (!file.isShader) { Prepend(file, include + "\n"); continue; }
 
                 file.text = Regex.Replace(
-                    file.text, @"(?m)^([ \t]*)(CGPROGRAM|HLSLPROGRAM)[ \t\r]*$",
+                    file.text, @"(?m)^([ \t]*)(CGPROGRAM|HLSLPROGRAM|CGINCLUDE|HLSLINCLUDE)[ \t\r]*$",
                     m => m.Groups[1].Value + m.Groups[2].Value + "\n" +
                          m.Groups[1].Value + include);
             }
@@ -672,6 +633,66 @@ namespace MeshProtect
                     file.text = file.text.Replace("\r\n", "\n").Replace("\n", "\r\n");
 
             return true;
+        }
+
+        private static bool PatchFragmentGuards(List<GraftFile> files, GraftFile shader,
+                                                HashSet<GraftFile> decodeFiles, out string why)
+        {
+            why = null;
+            foreach (var file in files)
+            {
+                if (!Regex.IsMatch(MaskNonCode(file.text), @"\[\s*earlydepthstencil\s*\]",
+                                   RegexOptions.IgnoreCase)) continue;
+                why = "this shader forces early depth/stencil writes, which a locked fragment " +
+                      "discard cannot prevent";
+                return false;
+            }
+
+            var names = Regex.Matches(MaskNonCode(shader.text), @"#pragma\s+fragment\s+(\w+)")
+                             .Cast<Match>().Select(m => m.Groups[1].Value).Distinct().ToList();
+            if (names.Count == 0)
+            {
+                why = "this shader declares no fragment stage where locked pixels can be discarded";
+                return false;
+            }
+
+            foreach (string name in names)
+            {
+                // Fragment signatures may have multiple inputs and out parameters. Only the
+                // opening brace matters; no parameter or return value is changed.
+                var pattern = new Regex(@"\b\w+\s+" + Regex.Escape(name) +
+                                        @"\s*\([^;{}]*\)\s*(?::\s*\w+\s*)?\{");
+                bool found = false;
+                foreach (var file in files)
+                {
+                    var matches = pattern.Matches(MaskNonCode(file.text)).Cast<Match>().ToList();
+                    foreach (var match in matches.OrderByDescending(m => m.Index))
+                    {
+                        file.text = file.text.Insert(match.Index + match.Length,
+                                                     "\n\tif(lilMPIsLocked()) discard;");
+                        decodeFiles.Add(file);
+                        found = true;
+                    }
+                }
+                if (found) continue;
+
+                why = $"'{name}' is bound as a fragment stage but its definition is not in " +
+                      "the copied files, so locked pixels could not be safely discarded";
+                return false;
+            }
+            return true;
+        }
+
+        /// <summary>Hide comments and quoted text without changing offsets or line breaks.</summary>
+        private static string MaskNonCode(string text)
+        {
+            return Regex.Replace(text, @"""(?:\\.|[^""\\])*""|//[^\r\n]*|/\*[\s\S]*?\*/", m =>
+            {
+                var chars = m.Value.ToCharArray();
+                for (int i = 0; i < chars.Length; i++)
+                    if (chars[i] != '\r' && chars[i] != '\n') chars[i] = ' ';
+                return new string(chars);
+            });
         }
 
         // ---- structural reading

@@ -62,8 +62,12 @@ namespace MPTest
         public static int RunCore()
         {
             int exit = 0;
+            bool previousOptimize = PlayerSettings.stripUnusedMeshComponents;
             try
             {
+                // SDK initialization turns this off in a fresh Avatar project. Exercise the
+                // stricter serialization setting explicitly, then restore the caller's choice.
+                PlayerSettings.stripUnusedMeshComponents = true;
                 Say("=== AssetBundle vertex round trip ===");
 
                 // This suite exists to show that UV0 survives a real bundle build bit-exact with
@@ -189,6 +193,7 @@ namespace MPTest
             }
             finally
             {
+                PlayerSettings.stripUnusedMeshComponents = previousOptimize;
                 if (AssetDatabase.IsValidFolder(Folder)) AssetDatabase.DeleteAsset(Folder);
                 AssetDatabase.RemoveUnusedAssetBundleNames();
                 AssetDatabase.Refresh();

@@ -61,7 +61,7 @@ namespace MeshProtect
             /// the blend tree saved as its own .asset. Rewritable only by copying it in first.</summary>
             SeparateAsset,
 
-            /// <summary>A playable layer left exactly as the avatar had it.</summary>
+            /// <summary>A playable layer or external behaviour left exactly as the avatar had it.</summary>
             ForeignController,
 
             /// <summary>A clip that is never cloned, so its curves cannot be rewritten: VRChat's own
@@ -434,11 +434,58 @@ namespace MeshProtect
                 add(p.name, owned, label + ": declared " + p.type);
 
             var machines = new HashSet<AnimatorStateMachine>();
-            var motions = new HashSet<Motion>();
+            var motions = new HashSet<(Motion motion, bool blockedByTree)>();
+            var overrideMotions = new HashSet<(Motion motion, bool blockedByTree)>();
 
             foreach (var layer in controller.layers)
+            {
                 SurveyStateMachine(layer.stateMachine, label + "/" + layer.name, ScopeOf, machines,
-                                   motions, declared, gogo, add);
+                                   motions, declared, gogo, options.copySeparateBlendTrees, add);
+
+                // Synchronized-layer overrides are stored on the layer rather than the states.
+                // No rewrite pass handles those tables, even when their assets are controller-owned.
+                foreach (var state in SyncedLayerStates(controller, layer))
+                {
+                    string where = label + "/" + layer.name + " override " + state.name;
+                    SurveyMotion(layer.GetOverrideMotion(state), where, _ => Scope.ForeignController,
+                                 overrideMotions, declared, false, false, false, add);
+                    foreach (var behaviour in layer.GetOverrideBehaviours(state) ?? new StateMachineBehaviour[0])
+                        SurveyBehaviour(behaviour, where, _ => Scope.ForeignController, add);
+                }
+            }
+        }
+
+        /// <summary>The states used as keys by a synchronized layer's motion/behaviour overrides.</summary>
+        internal static IEnumerable<AnimatorState> SyncedLayerStates(AnimatorController controller,
+                                                                     AnimatorControllerLayer layer)
+        {
+            int index = layer.syncedLayerIndex;
+            if (index < 0) yield break;
+            var layers = controller.layers;
+            var visitedLayers = new HashSet<int>();
+            while (index >= 0 && index < layers.Length && visitedLayers.Add(index))
+            {
+                var source = layers[index];
+                if (source.syncedLayerIndex >= 0)
+                {
+                    index = source.syncedLayerIndex;
+                    continue;
+                }
+
+                var pending = new Stack<AnimatorStateMachine>();
+                var visited = new HashSet<AnimatorStateMachine>();
+                if (source.stateMachine != null) pending.Push(source.stateMachine);
+                while (pending.Count > 0)
+                {
+                    var machine = pending.Pop();
+                    if (!visited.Add(machine)) continue;
+                    foreach (var child in machine.states)
+                        if (child.state != null) yield return child.state;
+                    foreach (var child in machine.stateMachines)
+                        if (child.stateMachine != null) pending.Push(child.stateMachine);
+                }
+                yield break;
+            }
         }
 
         /// <summary>
@@ -496,14 +543,16 @@ namespace MeshProtect
         private static void SurveyStateMachine(AnimatorStateMachine machine, string where,
                                                Func<UnityEngine.Object, Scope> scopeOf,
                                                HashSet<AnimatorStateMachine> machines,
-                                               HashSet<Motion> motions, HashSet<string> declared,
-                                               bool gogo, Action<string, Scope, string> add)
+                                               HashSet<(Motion motion, bool blockedByTree)> motions,
+                                               HashSet<string> declared, bool gogo,
+                                               bool copySeparateBlendTrees,
+                                               Action<string, Scope, string> add)
         {
             if (machine == null || !machines.Add(machine)) return;
 
             foreach (var t in machine.anyStateTransitions) SurveyTransition(t, where + "/AnyState", scopeOf, add);
             foreach (var t in machine.entryTransitions) SurveyTransition(t, where + "/Entry", scopeOf, add);
-            foreach (var b in machine.behaviours) SurveyBehaviour(b, where, scopeOf(machine), add);
+            foreach (var b in machine.behaviours) SurveyBehaviour(b, where, scopeOf, add);
 
             foreach (var child in machine.states)
             {
@@ -522,9 +571,10 @@ namespace MeshProtect
                 add(state.timeParameter, scope, stateWhere + " time");
 
                 foreach (var t in state.transitions) SurveyTransition(t, stateWhere, scopeOf, add);
-                foreach (var b in state.behaviours) SurveyBehaviour(b, stateWhere, scope, add);
+                foreach (var b in state.behaviours) SurveyBehaviour(b, stateWhere, scopeOf, add);
 
-                SurveyMotion(state.motion, stateWhere, scopeOf, motions, declared, gogo, add);
+                SurveyMotion(state.motion, stateWhere, scopeOf, motions, declared, gogo,
+                             copySeparateBlendTrees, false, add);
             }
 
             foreach (var child in machine.stateMachines)
@@ -534,7 +584,7 @@ namespace MeshProtect
                     SurveyTransition(t, where + "/->" + name, scopeOf, add);
 
                 SurveyStateMachine(child.stateMachine, where + "/" + name, scopeOf, machines, motions,
-                                   declared, gogo, add);
+                                   declared, gogo, copySeparateBlendTrees, add);
             }
         }
 
@@ -549,15 +599,23 @@ namespace MeshProtect
         }
 
         private static void SurveyMotion(Motion motion, string where,
-                                         Func<UnityEngine.Object, Scope> scopeOf, HashSet<Motion> seen,
+                                         Func<UnityEngine.Object, Scope> scopeOf,
+                                         HashSet<(Motion motion, bool blockedByTree)> seen,
                                          HashSet<string> declared, bool gogo,
+                                         bool copySeparateBlendTrees, bool blockedByTree,
                                          Action<string, Scope, string> add)
         {
-            if (motion == null || !seen.Add(motion)) return;
+            if (motion == null) return;
+
+            // The rewrite stops at an external tree that was not copied, including all its clips.
+            // A shared motion may also be reached through an owned branch; keep both observations.
+            blockedByTree |= motion is BlendTree && !copySeparateBlendTrees &&
+                             scopeOf(motion) == Scope.SeparateAsset;
+            if (!seen.Add((motion, blockedByTree))) return;
 
             if (motion is BlendTree tree)
             {
-                var scope = scopeOf(tree);
+                var scope = blockedByTree ? Scope.SeparateAsset : scopeOf(tree);
                 add(tree.blendParameter, scope, where + "/tree " + tree.name + " blend");
                 if (tree.blendParameterY != tree.blendParameter)
                     add(tree.blendParameterY, scope, where + "/tree " + tree.name + " blendY");
@@ -566,7 +624,7 @@ namespace MeshProtect
                 {
                     add(child.directBlendParameter, scope, where + "/tree " + tree.name + " direct");
                     SurveyMotion(child.motion, where + "/tree " + tree.name, scopeOf, seen, declared,
-                                 gogo, add);
+                                 gogo, copySeparateBlendTrees, blockedByTree, add);
                 }
                 return;
             }
@@ -575,7 +633,7 @@ namespace MeshProtect
             {
                 Scope scope = gogo || MeshProtectObfuscator.IsClientOwned(clip)
                     ? Scope.ClipNotCloned
-                    : scopeOf(null);
+                    : blockedByTree ? Scope.SeparateAsset : scopeOf(null);
 
                 foreach (var binding in AnimationUtility.GetCurveBindings(clip))
                 {
@@ -595,9 +653,15 @@ namespace MeshProtect
         /// fields whose names contain "parameter" catches both, and a false positive costs one
         /// unrenamed parameter.
         /// </summary>
-        private static void SurveyBehaviour(StateMachineBehaviour behaviour, string where, Scope scope,
+        private static void SurveyBehaviour(StateMachineBehaviour behaviour, string where,
+                                            Func<UnityEngine.Object, Scope> scopeOf,
                                             Action<string, Scope, string> add)
         {
+            if (behaviour == null) return;
+            // Copying external blend trees does not copy an external behaviour. Its names must
+            // stay intact even when the state referring to it belongs to this controller.
+            var scope = scopeOf(behaviour);
+            if (scope == Scope.SeparateAsset) scope = Scope.ForeignController;
             foreach (var pair in BehaviourParameterFields(behaviour))
                 add(pair.Value, scope, where + " " + pair.Key);
         }
@@ -850,7 +914,7 @@ namespace MeshProtect
                 case Scope.SeparateAsset:
                     return "used by a blend tree stored in its own file (" + first.where + ")";
                 case Scope.ForeignController:
-                    return "used by a controller this upload does not rewrite (" + first.where + ")";
+                    return "used by a controller or behaviour this upload does not rewrite (" + first.where + ")";
                 case Scope.ClipNotCloned:
                     return "used by an animation VRChat matches by name (" + first.where + ")";
                 case Scope.ChildAnimator:
@@ -1188,7 +1252,7 @@ namespace MeshProtect
             foreach (var t in machine.entryTransitions) RewriteTransition(t, ownerPath, map, ref rewrites);
 
             if (Belongs(machine, ownerPath))
-                foreach (var b in machine.behaviours) RewriteBehaviour(b, map, ref rewrites);
+                foreach (var b in machine.behaviours) RewriteBehaviour(b, ownerPath, map, ref rewrites);
 
             foreach (var child in machine.states)
             {
@@ -1213,7 +1277,7 @@ namespace MeshProtect
                     string time = Remap(state.timeParameter, map);
                     if (time != state.timeParameter) { state.timeParameter = time; rewrites++; }
 
-                    foreach (var b in state.behaviours) RewriteBehaviour(b, map, ref rewrites);
+                    foreach (var b in state.behaviours) RewriteBehaviour(b, ownerPath, map, ref rewrites);
                     RewriteMotion(state.motion, ownerPath, map, motions, ref rewrites);
                 }
 
@@ -1304,10 +1368,11 @@ namespace MeshProtect
             }
         }
 
-        private static void RewriteBehaviour(StateMachineBehaviour behaviour, IDictionary<string, string> map,
+        private static void RewriteBehaviour(StateMachineBehaviour behaviour, string ownerPath,
+                                             IDictionary<string, string> map,
                                              ref int rewrites)
         {
-            if (behaviour == null) return;
+            if (!Belongs(behaviour, ownerPath)) return;
             var type = behaviour.GetType();
 
             if (type.Name.IndexOf("AvatarParameterDriver", StringComparison.Ordinal) >= 0)

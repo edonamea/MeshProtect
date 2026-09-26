@@ -376,27 +376,14 @@ namespace MeshProtect
             RejectTypeClashes(parameters, fx, paramNames, variant.bitNames);
             AddExpressionParameters(parameters, variant, paramNames, variant.bitNames);
             var keyMenu = BuildKeyMenu(variant, paramNames, folder);
-            rootMenu = AttachSubMenu(rootMenu, keyMenu, variant, folder);
+            rootMenu = AttachSubMenu(rootMenu, keyMenu, variant, folder, settings);
             AddPackLayers(fx, variant, paramNames, folder, writeDefaults);
             AddDecodeLayers(fx, variant, avatar, renderers, folder, writeDefaults);
 
             descriptor.expressionParameters = parameters;
             descriptor.expressionsMenu = rootMenu;
-            // If the FX layer held an override controller, put an equivalent chain back on top of
-            // our copy.
-            //
-            // A runtime check used to sit here that re-read the rebuilt chain and refused the build
-            // if any of the author's clip swaps had not survived. It is gone, and why is worth
-            // keeping: the failure it guarded against was invented rather than observed. The worry
-            // was that a base controller storing its clips as SUB-ASSETS would give a copy holding
-            // different AnimationClip objects, so overrides keyed by object identity would stop
-            // matching. Measured both ways - clip as its own asset, clip inside the controller's
-            // file - and neither breaks, because the rebuild re-applies by clip NAME.
-            //
-            // override/clip-is-own-asset and override/clip-inside-controller cover both, and assert
-            // the author's swap is still in place afterwards. That is where a regression belongs:
-            // in the suite, once, rather than in every user's build forever. A broken override is
-            // also not a silent failure - the avatar visibly animates wrong.
+            // Preserve the override chain, including distinct clips that happen to share a name.
+            // External clips keep their identities; copied sub-assets are matched by local file ID.
             var fxTarget = RebuildOverrideChain(overrideChain, fx, variant, folder);
             SetFXLayer(descriptor, fxTarget);
 
@@ -679,79 +666,88 @@ namespace MeshProtect
         }
 
         /// <summary>
-        /// Put the unlock entry somewhere the wearer can reach, and return the menu the descriptor
-        /// should point at afterwards.
-        ///
-        /// VRChat allows eight controls per menu, which is not many. A full root is ordinary, and
-        /// anything that installs menu items earlier in the build - Modular Avatar above all - can
-        /// take the last slot before this code ever runs. Refusing to build then leaves the author
-        /// rearranging a menu they may not have designed, and for someone selling the model, it
-        /// means telling every buyer to do the same.
-        ///
-        /// When the root is full, the last control moves down into an overflow page and the unlock
-        /// entry joins it there: seven of the author's entries stay exactly where they were, and one
-        /// is a tap deeper. Seven plus one, with two inside the one.
-        ///
-        /// This replaced wrapping the WHOLE menu into a new root, which was one line shorter to
-        /// write and much worse to use: every toggle the wearer touches all day moved a level down
-        /// to make room for a control they use once. That came back from someone actually wearing
-        /// it, and "too hard to use" was the whole report - which is the right verdict, because
-        /// nothing about it was broken.
-        ///
-        /// Either way it is confined to the build: the menu in the project is untouched, and
-        /// freeing one root slot before the next upload puts everything back.
+        /// Resolve the parent against the final menu tree and copy the branch we edit. Automatic
+        /// placement keeps the original overflow behaviour; an explicit slot stays on that page.
         /// </summary>
         private static VRCExpressionsMenu AttachSubMenu(VRCExpressionsMenu rootMenu,
                                                         VRCExpressionsMenu keyMenu,
-                                                        MeshProtectVariant variant, string folder)
+                                                        MeshProtectVariant variant, string folder,
+                                                        MeshProtectRoot settings)
         {
-            if (rootMenu.controls == null) rootMenu.controls = new List<VRCExpressionsMenu.Control>();
+            var targetMenu = rootMenu;
+            var segments = MeshProtectMenuPath.Parse(settings.unlockMenuPath);
+            for (int depth = 0; depth < segments.Length; depth++)
+            {
+                var submenus = (targetMenu.controls ?? new List<VRCExpressionsMenu.Control>())
+                    .Where(c => c != null &&
+                                c.type == VRCExpressionsMenu.Control.ControlType.SubMenu &&
+                                c.subMenu != null).ToArray();
+                var matches = MeshProtectMenuPath.MatchIndices(
+                    submenus.Select(c => c.name).ToArray(), segments[depth]);
+                if (matches.Length != 1)
+                    throw new System.InvalidOperationException(
+                        $"Unlock menu path '{settings.unlockMenuPath}' cannot be resolved: " +
+                        $"'{segments[depth]}' matches {matches.Length} submenus. Use a unique " +
+                        "exact submenu name, including rich-text tags if needed. Escape a literal " +
+                        "'/' in a name as '\\/'.");
 
-            // A re-bake of an already-processed menu would otherwise accumulate entries.
-            rootMenu.controls.RemoveAll(c => c != null && c.name == RootControlName);
+                var selected = submenus[matches[0]];
+                var child = CopyMenu(selected.subMenu,
+                    variant.rootMenuAssetName + "_p" + depth, folder);
+                selected.subMenu = child;
+                EditorUtility.SetDirty(targetMenu);
+                targetMenu = child;
+            }
+            if (targetMenu.controls == null) targetMenu.controls = new List<VRCExpressionsMenu.Control>();
 
             var unlock = new VRCExpressionsMenu.Control
             {
-                name = RootControlName,
+                name = string.IsNullOrWhiteSpace(settings.unlockMenuName)
+                    ? RootControlName : settings.unlockMenuName.Trim(),
                 type = VRCExpressionsMenu.Control.ControlType.SubMenu,
                 subMenu = keyMenu,
                 parameter = new VRCExpressionsMenu.Control.Parameter { name = "" }
             };
 
-            if (rootMenu.controls.Count < MenuControlLimit)
+            // Display labels belong to the author; an existing "Unlock" is not our control.
+            int position = Mathf.Clamp(settings.unlockMenuPosition, 0, MenuControlLimit);
+            if (targetMenu.controls.Count < MenuControlLimit)
             {
-                rootMenu.controls.Add(unlock);
+                int index = position == 0 ? targetMenu.controls.Count
+                    : Mathf.Min(position - 1, targetMenu.controls.Count);
+                targetMenu.controls.Insert(index, unlock);
+                EditorUtility.SetDirty(targetMenu);
                 return rootMenu;
             }
 
-            // Full. Everything from the last kept slot onwards moves into the overflow page - which
-            // is one control in the ordinary case, and more only if something upstream already put
-            // more than eight in here, where leaving the extras behind would silently drop them.
-            int keep = MenuControlLimit - 1;
-            var displaced = rootMenu.controls.GetRange(keep, rootMenu.controls.Count - keep);
-            rootMenu.controls.RemoveRange(keep, rootMenu.controls.Count - keep);
+            // An explicit slot reserves room for Unlock and More. Automatic placement moves
+            // only the last original entry down and puts Unlock beside it.
+            int keep = MenuControlLimit - (position == 0 ? 1 : 2);
+            var displaced = targetMenu.controls.GetRange(keep, targetMenu.controls.Count - keep);
+            targetMenu.controls.RemoveRange(keep, targetMenu.controls.Count - keep);
 
             var overflow = ScriptableObject.CreateInstance<VRCExpressionsMenu>();
             overflow.name = variant.wrapperMenuAssetName;
-            overflow.controls = new List<VRCExpressionsMenu.Control>(displaced) { unlock };
+            overflow.controls = displaced;
+            if (position == 0) overflow.controls.Add(unlock);
             AssetDatabase.CreateAsset(overflow, $"{folder}/{overflow.name}.asset");
 
-            rootMenu.controls.Add(new VRCExpressionsMenu.Control
+            targetMenu.controls.Add(new VRCExpressionsMenu.Control
             {
                 name = OverflowControlName,
                 type = VRCExpressionsMenu.Control.ControlType.SubMenu,
                 subMenu = overflow,
                 parameter = new VRCExpressionsMenu.Control.Parameter { name = "" }
             });
+            if (position != 0) targetMenu.controls.Insert(position - 1, unlock);
+            EditorUtility.SetDirty(targetMenu);
 
             Debug.LogWarning(
-                $"[MeshProtect] The root expression menu was already at VRChat's limit of " +
-                $"{MenuControlLimit} controls, so '{displaced[0].name}' moved into a " +
-                $"'{OverflowControlName}' page with the unlock entry. Your other " +
-                $"{keep} root controls are where they were. Only the upload is affected - your " +
-                "project's menu is unchanged - and freeing one root slot before the next upload " +
-                "stops it happening.");
-
+                $"[MeshProtect] The selected expression menu was full. Its last " +
+                $"{MenuControlLimit - keep} original control(s) moved into '{OverflowControlName}'. " +
+                (position == 0 ? $"'{unlock.name}' is in that page too. "
+                               : $"'{unlock.name}' occupies position {position}. ") +
+                "Only this build's menu copies were changed.");
             return rootMenu;
         }
 
@@ -1134,15 +1130,20 @@ namespace MeshProtect
         private static VRCExpressionsMenu CloneOrCreateMenu(VRCAvatarDescriptor descriptor,
                                                             MeshProtectVariant variant, string folder)
         {
-            string path = $"{folder}/{variant.rootMenuAssetName}.asset";
+            return CopyMenu(descriptor.expressionsMenu, variant.rootMenuAssetName, folder);
+        }
 
-            var created = ScriptableObject.CreateInstance<VRCExpressionsMenu>();
-            created.name = variant.rootMenuAssetName;
-            created.controls = descriptor.expressionsMenu?.controls != null
-                ? new List<VRCExpressionsMenu.Control>(descriptor.expressionsMenu.controls)
-                : new List<VRCExpressionsMenu.Control>();
-            AssetDatabase.CreateAsset(created, path);
-            return created;
+        private static VRCExpressionsMenu CopyMenu(VRCExpressionsMenu source, string name, string folder)
+        {
+            // Instantiate copies the serializable controls too. Replacing a submenu reference
+            // must never edit the author's control object, including menus stored as sub-assets.
+            var copy = source != null ? Object.Instantiate(source)
+                : ScriptableObject.CreateInstance<VRCExpressionsMenu>();
+            copy.name = name;
+            copy.hideFlags = HideFlags.None;
+            if (copy.controls == null) copy.controls = new List<VRCExpressionsMenu.Control>();
+            AssetDatabase.CreateAsset(copy, AssetDatabase.GenerateUniqueAssetPath($"{folder}/{name}.asset"));
+            return copy;
         }
 
         private static AnimatorController CloneOrCreateFXController(VRCAvatarDescriptor descriptor,
@@ -1228,24 +1229,47 @@ namespace MeshProtect
         /// Rebuild an override chain on top of our copied controller, and hand back the thing the
         /// descriptor should point at.
         ///
-        /// The overrides are keyed by the clips of the BASE controller, and our copy's clips are
-        /// only the same objects if they were separate assets - a controller that keeps its clips
-        /// as sub-assets produces a copy holding different AnimationClip objects, and every
-        /// override silently stops matching. The avatar would then upload with the base controller's
-        /// clips in place of the author's, and the build would report success. So the overrides are
-        /// re-applied by clip NAME, and the caller checks afterwards that the result is what it was.
+        /// External clip references survive the controller file copy. Clips in that same file get
+        /// new object identities, but retain their local file IDs. Names are not identities: two
+        /// different clips named Idle can have different overrides, or only one can be overridden.
         /// </summary>
         private static RuntimeAnimatorController RebuildOverrideChain(
             List<KeyValuePair<AnimatorOverrideController,
                               List<KeyValuePair<AnimationClip, AnimationClip>>>> chain,
             AnimatorController baseCopy, MeshProtectVariant variant, string folder)
         {
+            if (chain.Count == 0) return baseCopy;
+
+            string sourcePath = AssetDatabase.GetAssetPath(
+                UnderlyingController(chain[chain.Count - 1].Key));
+            string copyPath = AssetDatabase.GetAssetPath(baseCopy);
+            var copiedClips = new Dictionary<long, AnimationClip>();
+            foreach (var clip in baseCopy.animationClips)
+            {
+                if (clip == null || AssetDatabase.GetAssetPath(clip) != copyPath) continue;
+                if (AssetDatabase.TryGetGUIDAndLocalFileIdentifier(clip, out _, out long id))
+                    copiedClips[id] = clip;
+            }
+
             RuntimeAnimatorController below = baseCopy;
 
             // Innermost first, so each copy can point at the one already rebuilt beneath it.
             for (int i = chain.Count - 1; i >= 0; i--)
             {
                 var wanted = chain[i].Value;
+                var replacements = new Dictionary<AnimationClip, AnimationClip>();
+                foreach (var original in wanted)
+                {
+                    if (original.Key == null || original.Value == null) continue;
+                    // Keep the original identity too: external clips and values inherited from
+                    // an inner override have not been copied into the controller file.
+                    replacements[original.Key] = original.Value;
+                    if (!string.IsNullOrEmpty(sourcePath) &&
+                        AssetDatabase.GetAssetPath(original.Key) == sourcePath &&
+                        AssetDatabase.TryGetGUIDAndLocalFileIdentifier(original.Key, out _, out long id) &&
+                        copiedClips.TryGetValue(id, out var copiedKey))
+                        replacements[copiedKey] = original.Value;
+                }
 
                 var copy = new AnimatorOverrideController
                 {
@@ -1262,15 +1286,8 @@ namespace MeshProtect
                 for (int s = 0; s < slots.Count; s++)
                 {
                     var key = slots[s].Key;
-                    if (key == null) continue;
-
-                    foreach (var original in wanted)
-                    {
-                        if (original.Key == null || original.Value == null) continue;
-                        if (original.Key.name != key.name) continue;
-                        slots[s] = new KeyValuePair<AnimationClip, AnimationClip>(key, original.Value);
-                        break;
-                    }
+                    if (key != null && replacements.TryGetValue(key, out var replacement))
+                        slots[s] = new KeyValuePair<AnimationClip, AnimationClip>(key, replacement);
                 }
 
                 copy.ApplyOverrides(slots);

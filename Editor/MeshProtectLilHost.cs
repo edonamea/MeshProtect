@@ -7,9 +7,6 @@ using System.Security.Cryptography;
 using System.Text;
 using UnityEditor;
 using UnityEngine;
-#if LILMP_VRCSDK3_AVATARS
-using VRC.SDK3.Avatars.Components;
-#endif
 
 namespace MeshProtect
 {
@@ -423,47 +420,7 @@ namespace MeshProtect
                 if (host != null && !seen.ContainsKey(host.family)) seen[host.family] = host;
             }
 
-            foreach (var renderer in avatar.GetComponentsInChildren<Renderer>(true))
-                foreach (var material in renderer.sharedMaterials)
-                    Take(material);
-
-#if LILMP_VRCSDK3_AVATARS
-            // A host material can live only inside an animation - an outfit toggle that swaps a
-            // lilSSRT material onto a renderer whose own material is stock lilToon. Walking
-            // renderers alone never saw it, so nothing was prepared for that family and the
-            // material's own warning sent the author to a button that would not have found it
-            // either. The build converts clip-referenced materials, so the survey must see them.
-            // The parameterless overload skips inactive objects, and an avatar parked disabled
-            // in the scene is the normal editing state - so on a disabled avatar this returned
-            // null and no merged family was prepared, while the graft path's identical sweep
-            // found the descriptor through its fallback and prepared its half. The build then
-            // named those materials as shipping unprotected and pointed at the button that had
-            // just run and reported success.
-            var descriptor = avatar.GetComponentInParent<VRCAvatarDescriptor>()
-                             ?? avatar.GetComponentInChildren<VRCAvatarDescriptor>(true);
-            if (descriptor != null)
-            {
-                var layers = (descriptor.baseAnimationLayers ?? new VRCAvatarDescriptor.CustomAnimLayer[0])
-                    .Concat(descriptor.specialAnimationLayers ?? new VRCAvatarDescriptor.CustomAnimLayer[0]);
-
-                foreach (var layer in layers)
-                {
-                    if (layer.animatorController == null) continue;
-                    foreach (var clip in layer.animatorController.animationClips)
-                    {
-                        if (clip == null) continue;
-                        foreach (var binding in AnimationUtility.GetObjectReferenceCurveBindings(clip))
-                        {
-                            if (!binding.propertyName.StartsWith("m_Materials", StringComparison.Ordinal))
-                                continue;
-                            var keys = AnimationUtility.GetObjectReferenceCurve(clip, binding);
-                            if (keys == null) continue;
-                            foreach (var key in keys) Take(key.value as Material);
-                        }
-                    }
-                }
-            }
-#endif
+            foreach (var material in MeshProtectMaterialDiscovery.Collect(avatar)) Take(material);
             return seen.Values;
         }
 
@@ -492,7 +449,8 @@ namespace MeshProtect
             string hostInsertPath = Path.Combine(hostReal, "custom_insert.hlsl");
             string hostInsert = File.Exists(hostInsertPath) ? File.ReadAllText(hostInsertPath) : "";
             File.WriteAllText(Path.Combine(real, "custom_insert.hlsl"),
-                              hostInsert + "\n\n" + MeshProtectShaderGen.EmitDecodeHlsl(variant));
+                              hostInsert + "\n\n" + MeshProtectShaderGen.EmitDecodeHlsl(variant) +
+                              MeshProtectShaderGen.EmitLilVisibilityHlsl());
 
             // Property declarations concatenate cleanly - they are a list, not a macro.
             string hostPropsPath = Path.Combine(hostReal, "lilCustomShaderProperties.lilblock");

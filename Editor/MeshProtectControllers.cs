@@ -48,6 +48,10 @@ namespace MeshProtect
     /// </summary>
     public static class MeshProtectControllers
     {
+        // Older snapshots may predate external-reference/override checks or include layers that
+        // preparation skipped. Their bytes alone cannot prove the recorded maps safe to adopt.
+        private const string PreparedHashPrefix = "ownership-v2:";
+
         /// <summary>What the author needs to know before pressing Build &amp; Publish.</summary>
         public enum State
         {
@@ -72,6 +76,7 @@ namespace MeshProtect
             layer.type != VRCAvatarDescriptor.AnimLayerType.FX &&
             layer.animatorController is AnimatorController;
 
+        /// <summary>Parent directory for immutable prepared snapshots of this protection variant.</summary>
         public static string Folder(MeshProtectRoot settings)
         {
             return $"{MeshProtectShaderGen.OutputRoot(settings)}/_Controllers/{settings.variant.shaderName}";
@@ -96,12 +101,20 @@ namespace MeshProtect
                     "Generate a password first - the replacement names come from the algorithm it " +
                     "generates, so there is nothing to rename to yet.");
 
-            string folder = Folder(settings);
+            // Duplicating an avatar or scene copies the variant AND all saved paths. A new
+            // snapshot for each preparation keeps those other instances and Undo records valid;
+            // a serialized owner ID would itself be duplicated and would not solve the collision.
+            string parent = Folder(settings);
+            EnsureFolder(parent);
+            string folderGuid = AssetDatabase.CreateFolder(parent, Guid.NewGuid().ToString("N"));
+            string folder = AssetDatabase.GUIDToAssetPath(folderGuid);
+            if (string.IsNullOrEmpty(folder) || !AssetDatabase.IsValidFolder(folder))
+                throw new InvalidOperationException("Could not create a protected controller snapshot in '" +
+                                                    parent + "'. The previous record was kept.");
 
-            // Start from empty every time. Preparing twice with a layer removed in between would
-            // otherwise leave the old copy behind, and the build would go on adopting it.
+            // Forget only this component's old record. Its files may still belong to another
+            // avatar, a closed scene, a prefab, or an Undo step, so they must not be deleted here.
             Clear(settings);
-            EnsureFolder(folder);
 
             var prepared = new List<MeshProtectRoot.PreparedController>();
             int warnedBefore = warnings?.Count ?? 0;
@@ -158,13 +171,13 @@ namespace MeshProtect
             if (settings.obfuscateObjectNames)
                 renamed += RenameObjects(settings, descriptor, copies, folder, warnings);
 
-            EditorUtility.SetDirty(settings);
+            MeshProtectEditorSettings.Persist(settings);
             AssetDatabase.SaveAssets();
 
             // After the save, because what is being recorded is the file, and until SaveAssets runs
             // the file is not what the copies are. This is the record that Undo cannot rewrite.
-            foreach (var entry in prepared) entry.copyHash = HashOf(entry.copyPath);
-            EditorUtility.SetDirty(settings);
+            foreach (var entry in prepared) entry.copyHash = PreparedCopyHash(entry.copyPath);
+            MeshProtectEditorSettings.Persist(settings);
 
             return renamed;
         }
@@ -219,8 +232,11 @@ namespace MeshProtect
         internal static MeshProtectObjectNames.Options ObjectSurveyOptions(
             MeshProtectRoot settings, VRCAvatarDescriptor descriptor)
         {
-            bool copiesExist = settings.preparedControllers.Count > 0;
-            var options = new MeshProtectObjectNames.Options();
+            var prepared = PreparedByIdentity(settings);
+            var options = new MeshProtectObjectNames.Options
+            {
+                copySeparateBlendTrees = settings.copySeparateBlendTrees
+            };
 
             foreach (var layers in new[] { descriptor.baseAnimationLayers, descriptor.specialAnimationLayers })
             {
@@ -230,7 +246,8 @@ namespace MeshProtect
                     if (layer.isDefault) continue;
 
                     bool fx = layer.type == VRCAvatarDescriptor.AnimLayerType.FX;
-                    if (!fx && !(copiesExist && Preparable(layer))) continue;
+                    string identity = ControllerIdentity(layer.animatorController, layer.type.ToString());
+                    if (!fx && (identity == null || !prepared.ContainsKey(identity))) continue;
 
                     var controller = layer.animatorController as AnimatorController;
                     if (controller != null) options.rewritable.Add(controller);
@@ -290,7 +307,7 @@ namespace MeshProtect
         internal static MeshProtectParameters.Options SurveyOptions(MeshProtectRoot settings,
                                                                     VRCAvatarDescriptor descriptor)
         {
-            bool copiesExist = settings.preparedControllers.Count > 0;
+            var prepared = PreparedByIdentity(settings);
             var options = new MeshProtectParameters.Options
             {
                 expressionParameters = settings.obfuscateExpressionParameters,
@@ -308,7 +325,8 @@ namespace MeshProtect
                     if (layer.isDefault) continue;
 
                     bool fx = layer.type == VRCAvatarDescriptor.AnimLayerType.FX;
-                    if (!fx && !(copiesExist && Preparable(layer))) continue;
+                    string identity = ControllerIdentity(layer.animatorController, layer.type.ToString());
+                    if (!fx && (identity == null || !prepared.ContainsKey(identity))) continue;
 
                     var controller = layer.animatorController as AnimatorController;
                     if (controller != null) options.rewritable.Add(controller);
@@ -330,11 +348,9 @@ namespace MeshProtect
         {
             var replaced = new HashSet<AnimatorController>();
             if (descriptor == null || settings == null) return replaced;
+            if (!ValidatePreparedCopies(settings, out _)) return replaced;
 
-            var byGuid = settings.preparedControllers
-                .Where(e => !string.IsNullOrEmpty(e.sourceGuid))
-                .GroupBy(e => e.sourceGuid)
-                .ToDictionary(g => g.Key, g => g.Last());
+            var byIdentity = PreparedByIdentity(settings);
 
             foreach (var layers in new[] { descriptor.baseAnimationLayers, descriptor.specialAnimationLayers })
             {
@@ -346,12 +362,8 @@ namespace MeshProtect
                     var controller = layer.animatorController as AnimatorController;
                     if (controller == null) continue;
 
-                    string path = AssetDatabase.GetAssetPath(controller);
-                    if (string.IsNullOrEmpty(path)) continue;
-
-                    if (!byGuid.TryGetValue(AssetDatabase.AssetPathToGUID(path), out var entry)) continue;
-                    if (AssetDatabase.LoadAssetAtPath<AnimatorController>(entry.copyPath) == null) continue;
-                    if (HashOf(path) != entry.sourceHash) continue;
+                    string identity = ControllerIdentity(controller, layer.type.ToString());
+                    if (identity == null || !byIdentity.ContainsKey(identity)) continue;
 
                     replaced.Add(controller);
                 }
@@ -406,11 +418,19 @@ namespace MeshProtect
                         "modified. Nothing was changed. If another tool built this controller in " +
                         "memory rather than saving it, save the avatar's setup to disk first.");
 
+                if (!AssetDatabase.TryGetGUIDAndLocalFileIdentifier(source, out string sourceGuid,
+                                                                     out long sourceLocalId) ||
+                    !AssetDatabase.TryGetGUIDAndLocalFileIdentifier(copy, out _, out long copyLocalId))
+                    throw new InvalidOperationException("Could not identify the prepared controller sub-assets.");
+
                 prepared.Add(new MeshProtectRoot.PreparedController
                 {
                     layerType = layer.type.ToString(),
-                    sourceGuid = AssetDatabase.AssetPathToGUID(sourcePath),
+                    sourceGuid = sourceGuid,
+                    sourceLocalId = sourceLocalId,
+                    copyLocalId = copyLocalId,
                     sourceHash = HashOf(sourcePath),
+                    sourceDependencyHash = DependencyHash(sourcePath),
                     copyPath = destination,
                 });
 
@@ -422,26 +442,14 @@ namespace MeshProtect
         }
 
         /// <summary>
-        /// Delete the copies and forget them.
-        ///
-        /// Driven by where the copies actually are rather than by where this avatar's folder is
-        /// now, because the folder is named after the protection id and Replace Protection changes
-        /// it. Clearing the current folder only would leave the previous algorithm's copies on disk
-        /// and still listed - and the build would go on adopting them, so the upload would carry
-        /// names from an algorithm the avatar no longer uses.
+        /// Forget this component's prepared record without deleting the immutable snapshot files.
+        /// Copies may still be referenced by another avatar, a closed scene, a prefab, or Undo.
+        /// Old snapshots deliberately remain on disk until the author chooses to remove them;
+        /// missing snapshots are already handled by the build's safe fallback.
         /// </summary>
         public static void Clear(MeshProtectRoot settings)
         {
             if (settings == null) return;
-
-            var folders = settings.preparedControllers
-                .Where(e => !string.IsNullOrEmpty(e.copyPath))
-                .Select(e => e.copyPath.Substring(0, e.copyPath.LastIndexOf('/')))
-                .Append(Folder(settings))
-                .Distinct();
-
-            foreach (var folder in folders)
-                if (AssetDatabase.IsValidFolder(folder)) AssetDatabase.DeleteAsset(folder);
 
             bool hadRecord = settings.preparedControllers.Count > 0 ||
                              settings.renamedParameters.Count > 0 ||
@@ -450,23 +458,19 @@ namespace MeshProtect
 
             settings.preparedControllers = new List<MeshProtectRoot.PreparedController>();
 
-            // The renamed names live in the copies being deleted here. Leaving the map behind would
-            // have the build rewrite the FX controller and the expression list to names nothing else
-            // in the avatar uses any more.
+            // The maps and their copies form one record. A component that forgets its copies must
+            // also stop using their maps in the rest of the build.
             settings.renamedParameters = new List<MeshProtectRoot.RenamedParameter>();
             settings.renamedObjects = new List<MeshProtectRoot.RenamedParameter>();
 
-            // The whole record moves together or it means nothing. Leaving these behind describing
-            // copies that were just deleted is not reachable as a failure today - every reader of
-            // them is behind a non-empty preparedControllers - but a set of fields that is only
-            // consistent by accident is how the Undo hole in this file got in.
+            // Reset the options with the maps so this record remains internally consistent.
             settings.preparedWithParameterNames = false;
             settings.preparedWithObjectNames = false;
             settings.preparedWithExpressionParameters = false;
             settings.preparedWithSeparateBlendTrees = false;
             settings.preparedSurfaceHash = null;
 
-            if (hadRecord) EditorUtility.SetDirty(settings);
+            if (hadRecord) MeshProtectEditorSettings.Persist(settings);
         }
 
         // ------------------------------------------------------------------ during the build
@@ -485,20 +489,23 @@ namespace MeshProtect
             var adopted = new List<string>();
             if (descriptor == null || settings == null || settings.preparedControllers.Count == 0)
                 return adopted;
+            if (!ValidatePreparedCopies(settings, out string reason))
+            {
+                report?.warnings.Add("Prepared controller copies were not used: " + reason);
+                return adopted;
+            }
 
-            var byGuid = new Dictionary<string, MeshProtectRoot.PreparedController>();
-            foreach (var entry in settings.preparedControllers)
-                if (!string.IsNullOrEmpty(entry.sourceGuid)) byGuid[entry.sourceGuid] = entry;
+            var byIdentity = PreparedByIdentity(settings);
 
             var used = new HashSet<string>();
-            Swap(ref descriptor.baseAnimationLayers, byGuid, used, adopted, report);
-            Swap(ref descriptor.specialAnimationLayers, byGuid, used, adopted, report);
+            Swap(ref descriptor.baseAnimationLayers, byIdentity, used, adopted, report);
+            Swap(ref descriptor.specialAnimationLayers, byIdentity, used, adopted, report);
 
             // Prepared, but the avatar being built no longer points at what it was made from. The
             // usual cause is another tool replacing the layer during this build, which is its right
             // - so this is a note, not a failure. It matters because those names ship readable and
             // the author would otherwise believe they did not.
-            var unused = settings.preparedControllers.Where(e => !used.Contains(e.sourceGuid)).ToList();
+            var unused = settings.preparedControllers.Where(e => !used.Contains(EntryIdentity(e))).ToList();
             if (unused.Count > 0)
                 report?.warnings.Add(
                     $"{unused.Count} prepared controller(s) were not used, because this build's " +
@@ -510,7 +517,7 @@ namespace MeshProtect
         }
 
         private static void Swap(ref VRCAvatarDescriptor.CustomAnimLayer[] layers,
-                                 Dictionary<string, MeshProtectRoot.PreparedController> byGuid,
+                                 Dictionary<string, MeshProtectRoot.PreparedController> byIdentity,
                                  HashSet<string> used, List<string> adopted,
                                  MeshProtectPipeline.Report report)
         {
@@ -523,8 +530,8 @@ namespace MeshProtect
                 string path = AssetDatabase.GetAssetPath(layers[i].animatorController);
                 if (string.IsNullOrEmpty(path)) continue;
 
-                string guid = AssetDatabase.AssetPathToGUID(path);
-                if (!byGuid.TryGetValue(guid, out var entry)) continue;
+                string identity = ControllerIdentity(layers[i].animatorController, layers[i].type.ToString());
+                if (identity == null || !byIdentity.TryGetValue(identity, out var entry)) continue;
 
                 // Both failures below mean the same thing: the copy cannot be trusted to be this
                 // controller. Neither stops the upload. Refusing would trade a working avatar for
@@ -532,7 +539,7 @@ namespace MeshProtect
                 // refused removes the tool, an author whose Base layer ships readable loses
                 // nothing they had. So the layer falls back to the author's own controller, which
                 // is exactly what every release before this feature shipped, and says so.
-                var copy = AssetDatabase.LoadAssetAtPath<AnimatorController>(entry.copyPath);
+                var copy = LoadController(entry.copyPath, entry.copyLocalId);
                 if (copy == null)
                 {
                     report?.warnings.Add(
@@ -558,12 +565,34 @@ namespace MeshProtect
                 }
 
                 layers[i].animatorController = copy;
-                used.Add(guid);
+                used.Add(identity);
                 adopted.Add(entry.copyPath);
             }
         }
 
         // ------------------------------------------------------------------ for the inspector
+
+        /// <summary>
+        /// Validate the persistent copies before a build trusts their recorded maps. The caller must
+        /// fall back for BOTH name maps when this fails, before excluding controllers from surveys.
+        /// No asset generation or scene mutation is performed here.
+        /// </summary>
+        internal static bool ValidatePreparedCopies(MeshProtectRoot settings, out string reason)
+        {
+            reason = null;
+            if (settings == null) return true;
+            if (settings.preparedControllers.Count == 0)
+            {
+                if (settings.renamedParameters.Count == 0 && settings.renamedObjects.Count == 0) return true;
+                reason = "the recorded name maps have no prepared controllers";
+                return false;
+            }
+
+            // The build independently surveys its current menus and components. Passing no
+            // descriptor here checks the recorded assets and options without comparing an upstream
+            // tool's newly generated menu with the source scene's menu.
+            return Inspect(settings, null, out reason) == State.UpToDate;
+        }
 
         public static State Inspect(MeshProtectRoot settings, VRCAvatarDescriptor descriptor,
                                     out string detail)
@@ -605,7 +634,15 @@ namespace MeshProtect
 
             foreach (var entry in settings.preparedControllers)
             {
-                if (AssetDatabase.LoadAssetAtPath<AnimatorController>(entry.copyPath) == null)
+                if (entry.sourceLocalId == 0 || entry.copyLocalId == 0 ||
+                    string.IsNullOrEmpty(entry.sourceDependencyHash) ||
+                    (!string.IsNullOrEmpty(entry.copyHash) &&
+                     !entry.copyHash.StartsWith(PreparedHashPrefix, StringComparison.Ordinal)))
+                {
+                    problems.Add($"the {entry.layerType} copy needs to be prepared with the current version");
+                    continue;
+                }
+                if (LoadController(entry.copyPath, entry.copyLocalId) == null)
                 {
                     problems.Add($"the prepared {entry.layerType} copy is gone");
                     continue;
@@ -621,17 +658,20 @@ namespace MeshProtect
                 // finished. Prepare sets the option flags before it renames, so a failure in the
                 // middle leaves flags that agree with each other, copies already half rewritten,
                 // and no map: exactly the state that looks up to date and is not.
-                if (entry.copyHash != HashOf(entry.copyPath))
+                if (string.IsNullOrEmpty(entry.copyHash) ||
+                    entry.copyHash != PreparedCopyHash(entry.copyPath))
                     problems.Add(string.IsNullOrEmpty(entry.copyHash)
                         ? $"the {entry.layerType} copy was never finished"
                         : $"the prepared {entry.layerType} copy is not the one this component was " +
                           "recorded against");
 
                 string sourcePath = AssetDatabase.GUIDToAssetPath(entry.sourceGuid);
-                if (string.IsNullOrEmpty(sourcePath))
+                if (string.IsNullOrEmpty(sourcePath) || LoadController(sourcePath, entry.sourceLocalId) == null)
                     problems.Add($"the controller the {entry.layerType} copy was made from is gone");
                 else if (HashOf(sourcePath) != entry.sourceHash)
                     problems.Add($"{Path.GetFileName(sourcePath)} has been edited since");
+                else if (DependencyHash(sourcePath) != entry.sourceDependencyHash)
+                    problems.Add($"an animation or other dependency of {Path.GetFileName(sourcePath)} has changed");
                 else if (!CopyMatchesTheMap(settings, entry, sourcePath))
                     problems.Add($"the prepared {entry.layerType} copy does not carry the names " +
                                  "this component says it does");
@@ -676,12 +716,13 @@ namespace MeshProtect
             // Everything the answer depends on: the copy's bytes, the source it was made from, and
             // the map it is being checked against. Cheap enough to build on every repaint, unlike
             // the answer itself, which reads two controllers' parameter lists.
-            string state = Stamp(entry.copyPath) + "|" + entry.sourceHash + "|" + Fingerprint(settings);
-            if (matched.TryGetValue(entry.copyPath, out var remembered) && remembered == state)
+            string identity = entry.copyPath + ":" + entry.copyLocalId;
+            string state = Stamp(entry.copyPath) + "|" + EntryIdentity(entry) + "|" + entry.sourceHash + "|" + Fingerprint(settings);
+            if (matched.TryGetValue(identity, out var remembered) && remembered == state)
                 return true;
 
-            var copy = AssetDatabase.LoadAssetAtPath<AnimatorController>(entry.copyPath);
-            var source = AssetDatabase.LoadAssetAtPath<AnimatorController>(sourcePath);
+            var copy = LoadController(entry.copyPath, entry.copyLocalId);
+            var source = LoadController(sourcePath, entry.sourceLocalId);
             if (copy == null || source == null) return true;   // reported by the caller's own checks
 
             var map = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -696,8 +737,53 @@ namespace MeshProtect
 
             if (!expected.SetEquals(actual)) return false;
 
-            matched[entry.copyPath] = state;
+            matched[identity] = state;
             return true;
+        }
+
+        private static string EntryIdentity(MeshProtectRoot.PreparedController entry) =>
+            entry.sourceGuid + ":" + entry.sourceLocalId + ":" + entry.layerType;
+
+        private static string ControllerIdentity(RuntimeAnimatorController controller, string layerType)
+        {
+            if (controller == null ||
+                !AssetDatabase.TryGetGUIDAndLocalFileIdentifier(controller, out string guid, out long id) ||
+                string.IsNullOrEmpty(guid)) return null;
+            return guid + ":" + id + ":" + layerType;
+        }
+
+        private static Dictionary<string, MeshProtectRoot.PreparedController> PreparedByIdentity(MeshProtectRoot settings)
+        {
+            return settings.preparedControllers.GroupBy(EntryIdentity)
+                .ToDictionary(g => g.Key, g => g.Last(), StringComparer.Ordinal);
+        }
+
+        private static AnimatorController LoadController(string path, long localId)
+        {
+            if (string.IsNullOrEmpty(path) || localId == 0) return null;
+            // Almost all controllers are main assets. Avoid enumerating every state/clip sub-asset
+            // on each inspector repaint and on the build's repeated eligibility checks.
+            var main = AssetDatabase.LoadAssetAtPath<AnimatorController>(path);
+            if (main != null &&
+                AssetDatabase.TryGetGUIDAndLocalFileIdentifier(main, out _, out long mainId) &&
+                mainId == localId) return main;
+            return AssetDatabase.LoadAllAssetsAtPath(path).OfType<AnimatorController>()
+                .FirstOrDefault(c => AssetDatabase.TryGetGUIDAndLocalFileIdentifier(c, out _, out long id) &&
+                                     id == localId);
+        }
+
+        private static string DependencyHash(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return null;
+
+            // A referenced .anim can change without changing the controller's import hash. Hash
+            // the actual referenced files explicitly, including nested trees and imported clips.
+            // This follows only this controller's dependencies; no project-wide search is needed.
+            var parts = AssetDatabase.GetDependencies(path, true)
+                .OrderBy(p => p, StringComparer.Ordinal)
+                .Select(p => p + ":" + AssetDatabase.GetAssetDependencyHash(p));
+            // The prefix also makes records containing the old controller-only hash go stale.
+            return "graph-v1:" + Hash128.Compute(string.Join("\n", parts));
         }
 
         /// <summary>Length and write time, which is all the cache needs to know a file moved on.</summary>
@@ -763,6 +849,12 @@ namespace MeshProtect
         /// </summary>
         private static readonly Dictionary<string, (long length, long stamp, string hash)> hashes =
             new Dictionary<string, (long, long, string)>();
+
+        private static string PreparedCopyHash(string assetPath)
+        {
+            string hash = HashOf(assetPath);
+            return string.IsNullOrEmpty(hash) ? null : PreparedHashPrefix + hash;
+        }
 
         private static string HashOf(string assetPath)
         {

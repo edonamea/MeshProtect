@@ -47,13 +47,14 @@ namespace MeshProtect
         {
             if (BuildInProgress || queued) return;
 
-            // .asset as well as .controller: which parameters are safe to rename depends on the
-            // expression parameter list and the menu tree, and both of those are .asset files. An
-            // author who adds a parameter and uploads would otherwise find the copies quietly
-            // dropped by the build's own safety check, over an edit nothing connects to this.
-            bool worthChecking = imported.Concat(moved).Any(
+            // The copies also contain clips and external blend trees. Changes, moves and deletions
+            // of these dependencies must wake the inspector's dependency-hash check as well as
+            // edits to the controller, expression parameters or menus themselves.
+            bool worthChecking = imported.Concat(deleted).Concat(moved).Concat(movedFrom).Any(
                 p => (p.EndsWith(".controller", System.StringComparison.OrdinalIgnoreCase) ||
-                      p.EndsWith(".asset", System.StringComparison.OrdinalIgnoreCase)) &&
+                      p.EndsWith(".asset", System.StringComparison.OrdinalIgnoreCase) ||
+                      p.EndsWith(".anim", System.StringComparison.OrdinalIgnoreCase) ||
+                      p.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase)) &&
                      !IsOurs(p));
             if (!worthChecking) return;
 

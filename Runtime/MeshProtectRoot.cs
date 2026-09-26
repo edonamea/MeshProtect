@@ -170,11 +170,19 @@ namespace MeshProtect
             /// again on the build clone even after other tools have run.</summary>
             public string sourceGuid;
 
+            // GUID identifies a file; playable controllers can be separate sub-assets in it.
+            // Zero is an old record and is deliberately not eligible for adoption.
+            public long sourceLocalId;
+            public long copyLocalId;
+
             /// <summary>What that controller's file looked like when the copy was taken. A copy of
             /// a controller the author has edited since is a copy of the wrong thing, and the
             /// symptom - a toggle that silently does nothing in the upload - is not one anybody
             /// would trace back to here.</summary>
             public string sourceHash;
+
+            /// <summary>Includes external clips and blend trees copied during preparation.</summary>
+            public string sourceDependencyHash;
 
             /// <summary>Where the renamed copy lives.</summary>
             public string copyPath;
@@ -262,6 +270,17 @@ namespace MeshProtect
         /// be complete.
         /// </summary>
         public string preparedSurfaceHash;
+
+        [Tooltip("Display name of the unlock menu entry. Empty uses Unlock.")]
+        public string unlockMenuName = "Unlock";
+
+        [Tooltip("Existing parent menu path, for example Settings/Tools. Empty uses the root menu. " +
+                 "Resolved after other avatar menu installers have run.")]
+        public string unlockMenuPath = "";
+
+        [Tooltip("Position within the parent menu, from 1 to 8. Zero appends the entry.")]
+        [Range(0, 8)]
+        public int unlockMenuPosition;
 
         [Tooltip("Renderers to protect. Leave empty to protect every renderer under this object " +
                  "that uses a lilToon material.")]

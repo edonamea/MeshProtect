@@ -74,6 +74,10 @@ namespace MPTest
 
                     TestBakeRoundTrip(settingsA, MeshProtectRoot.DisplacementMode.TangentSpace);
                     TestBakeRoundTrip(settingsA, MeshProtectRoot.DisplacementMode.Normal);
+                    TestSkinCheckAfterObjectRename(settingsA);
+#if LILMP_VRCSDK3_AVATARS
+                    TestSyncedMaterialSwapPreflight(settingsA);
+#endif
                     TestWrongPasswordDestroys(settingsA);
                     TestNoStoredCoefficients(settingsA);
                     TestCrossVariantIsUseless(settingsA, settingsB);
@@ -107,7 +111,8 @@ namespace MPTest
         }
 
         /// <summary>
-        /// The three emitters a MERGED HOST FAMILY embeds, pinned by hash. A graft embeds only
+        /// The four emitters a MERGED HOST FAMILY embeds, pinned by hash, including its lilToon
+        /// visibility gate. A graft embeds only
         /// one of them, EmitDecodeHlsl; MeshProtectForeignShader emits its own properties and its
         /// own header, and NEITHER of those is pinned by anything - a change to them can alter
         /// what a graft compiles while this test stays green. They are not folded in here on
@@ -125,7 +130,7 @@ namespace MPTest
         ///
         /// So this test is the ask, and the only loud thing in the arrangement. It fails on any
         /// change to the emitted text and the answer is one question: does the change alter what
-        /// a GRAFT compiles?
+        /// a GRAFT or MERGED HOST compiles?
         ///   yes - bump SharedSignatureFormat, then update the hash.
         ///   no  - the new text is gated on something only this package's own containers define,
         ///         the way format 3's vertTess rename is - update the hash alone.
@@ -137,11 +142,12 @@ namespace MPTest
         /// </summary>
         private static void TestSharedEmittersArePinned()
         {
-            const string Expected = "873BBAE441A3D3B225B8B0B01DDEE69EB956D4A0C49F6A88ED832239FFAD2011";
+            const string Expected = "8E07319C4AE4BC38652B89E2C2E0897B3FB11BC2F0F9DE6867C498103135BD70";
 
             var variant = MeshProtectVariantGenerator.Generate(new System.Random(20260831));
             var text = new StringBuilder();
-            foreach (var name in new[] { "EmitDecodeHlsl", "EmitProperties", "EmitCustomHlsl" })
+            foreach (var name in new[] { "EmitDecodeHlsl", "EmitProperties", "EmitCustomHlsl",
+                                         "EmitLilVisibilityHlsl" })
             {
                 var method = typeof(MeshProtectShaderGen).GetMethod(
                     name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
@@ -154,7 +160,8 @@ namespace MPTest
                     return;
                 }
                 text.Append(name).Append('\n')
-                    .Append((string)method.Invoke(null, new object[] { variant })).Append('\n');
+                    .Append((string)method.Invoke(null, name == "EmitLilVisibilityHlsl"
+                        ? null : new object[] { variant })).Append('\n');
             }
 
             string actual;
@@ -752,6 +759,171 @@ namespace MPTest
             UnityEngine.Object.DestroyImmediate(source);
             UnityEngine.Object.DestroyImmediate(baked);
         }
+
+        private static void TestSkinCheckAfterObjectRename(MeshProtectRoot settings)
+        {
+            var measure = typeof(MeshProtectSkinCheck).GetMethod(
+                "Measure", BindingFlags.NonPublic | BindingFlags.Static);
+            var shader = Shader.Find(settings.variant.shaderName + "/lilToon");
+            Check(measure != null && shader != null, "skincheck/fixture-ready",
+                  "measurement entry point and generated shader exist");
+            if (measure == null || shader == null) return;
+
+            var source = new GameObject("SkinSource");
+            var mesh = BuildTestMesh(4);
+            Mesh baked = null;
+            GameObject copy = null;
+            var material = new Material(shader);
+            try
+            {
+                // Duplicate sibling names ensure the check follows clone identity, not a name.
+                new GameObject("Outfit").transform.SetParent(source.transform, false);
+                var outfit = new GameObject("Outfit");
+                outfit.transform.SetParent(source.transform, false);
+                var renderer = outfit.AddComponent<SkinnedMeshRenderer>();
+                mesh.bindposes = new[] { Matrix4x4.identity };
+                mesh.boneWeights = Enumerable.Repeat(
+                    new BoneWeight { boneIndex0 = 0, weight0 = 1 }, mesh.vertexCount).ToArray();
+                renderer.sharedMesh = mesh;
+                renderer.bones = new[] { source.transform };
+                renderer.rootBone = source.transform;
+                renderer.sharedMaterial = material;
+
+                copy = UnityEngine.Object.Instantiate(source);
+                var protectedRenderer = copy.GetComponentInChildren<SkinnedMeshRenderer>();
+                uint key = MeshProtectCipher.PackDigits(settings.keyDigits, settings.variant);
+                var mode = MeshProtectRoot.DisplacementMode.TangentSpace;
+                baked = MeshProtectMesh.Bake(mesh, settings, mode, key, settings.variant).mesh;
+                // A visible residual must survive renaming; silently skipping this mesh reports 0.
+                baked.vertices = baked.vertices.Select(v => v + Vector3.right * 0.05f).ToArray();
+                protectedRenderer.sharedMesh = baked;
+                protectedRenderer.name = "RenamedOutfit";
+
+                MeshProtectSkinCheck.PoseResult Measure() =>
+                    (MeshProtectSkinCheck.PoseResult)measure.Invoke(null,
+                        new object[] { "test", source, copy, mode, key, settings.variant });
+
+                var result = Measure();
+                Check(result.verticesMeasured == mesh.vertexCount && result.worstError > 0.04,
+                      "skincheck/renamed-renderer-is-measured",
+                      $"vertices={result.verticesMeasured}, residual={result.worstError:F4}m");
+
+                protectedRenderer.sharedMaterials = new Material[0];
+                Check(Measure().verticesMeasured == 0, "skincheck/no-protected-vertices-is-empty",
+                      "zero measurements remain distinguishable from zero residual");
+            }
+            finally
+            {
+                if (copy != null) UnityEngine.Object.DestroyImmediate(copy);
+                UnityEngine.Object.DestroyImmediate(source);
+                if (baked != null) UnityEngine.Object.DestroyImmediate(baked);
+                UnityEngine.Object.DestroyImmediate(mesh);
+                UnityEngine.Object.DestroyImmediate(material);
+            }
+        }
+
+#if LILMP_VRCSDK3_AVATARS
+        private static void TestSyncedMaterialSwapPreflight(MeshProtectRoot settings)
+        {
+            var preflight = typeof(MeshProtectPipeline).GetMethod(
+                "DropRenderersWithUnsafeMaterialSwaps", BindingFlags.NonPublic | BindingFlags.Static);
+            var originalShader = Shader.Find("lilToon");
+            var protectedShader = Shader.Find(settings.variant.shaderName + "/lilToon");
+            Check(preflight != null && originalShader != null && protectedShader != null,
+                  "material-swap/synced-fixture-ready", "preflight and both shaders exist");
+            if (preflight == null || originalShader == null || protectedShader == null) return;
+
+            var avatar = new GameObject("SyncedSwapAvatar");
+            var controller = new UnityEditor.Animations.AnimatorController();
+            var baseMachine = new UnityEditor.Animations.AnimatorStateMachine();
+            var syncMachine = new UnityEditor.Animations.AnimatorStateMachine();
+            var tree = new UnityEditor.Animations.BlendTree();
+            var clip = new AnimationClip { name = "SyncedMaterialSwap" };
+            var original = new Material(originalShader);
+            var converted = new Material(protectedShader);
+            UnityEditor.Animations.AnimatorState state = null;
+            try
+            {
+                var descriptor = avatar.AddComponent<VRC.SDK3.Avatars.Components.VRCAvatarDescriptor>();
+                var child = new GameObject("Outfit");
+                child.transform.SetParent(avatar.transform, false);
+                var renderer = child.AddComponent<MeshRenderer>();
+                renderer.sharedMaterial = original;
+                var binding = new EditorCurveBinding
+                {
+                    path = "Outfit", type = typeof(MeshRenderer),
+                    propertyName = "m_Materials.Array.data[0]"
+                };
+                AnimationUtility.SetObjectReferenceCurve(clip, binding,
+                    new[] { new ObjectReferenceKeyframe { time = 0, value = original } });
+                state = baseMachine.AddState("Swap");
+                state.motion = clip;
+                tree.children = new[] { new UnityEditor.Animations.ChildMotion { motion = clip } };
+                var baseLayer = new UnityEditor.Animations.AnimatorControllerLayer
+                {
+                    name = "Base", stateMachine = baseMachine, defaultWeight = 1
+                };
+                var syncLayer = new UnityEditor.Animations.AnimatorControllerLayer
+                {
+                    name = "Synced", stateMachine = syncMachine, syncedLayerIndex = 0,
+                    defaultWeight = 1
+                };
+                // The same clip in an ordinary state is still unsafe if an override retains it.
+                syncLayer.SetOverrideMotion(state, tree);
+                controller.layers = new[] { baseLayer, syncLayer };
+                descriptor.baseAnimationLayers = new[]
+                {
+                    new VRC.SDK3.Avatars.Components.VRCAvatarDescriptor.CustomAnimLayer
+                    {
+                        type = VRC.SDK3.Avatars.Components.VRCAvatarDescriptor.AnimLayerType.FX,
+                        isDefault = false, animatorController = controller
+                    }
+                };
+                var candidates = new List<(Renderer renderer, Material[] materials, bool[] protectedSubMesh)>();
+                var cache = new Dictionary<Material, Material> { [original] = converted };
+                uint mac = MeshProtectCipher.Mac(
+                    MeshProtectCipher.PackDigits(settings.keyDigits, settings.variant), settings.variant);
+                MeshProtectPipeline.Report RunPreflight()
+                {
+                    candidates.Clear();
+                    candidates.Add((renderer, new[] { converted }, new[] { true }));
+                    var report = new MeshProtectPipeline.Report();
+                    preflight.Invoke(null, new object[]
+                    {
+                        avatar, settings, candidates, cache, settings.variant, mac, ScratchFolder, report
+                    });
+                    return report;
+                }
+
+                var refused = RunPreflight();
+                Check(candidates.Count == 0 && refused.skippedRenderers == 1 &&
+                      refused.warnings.Any(w => w.Contains("synced layer overrides")),
+                      "material-swap/synced-override-keeps-renderer-original",
+                      "a convertible swap in a synced override is excluded before displacement");
+                Check(renderer.sharedMaterial == original &&
+                      AnimationUtility.GetObjectReferenceCurve(clip, binding)[0].value == original,
+                      "material-swap/synced-originals-untouched", "renderer and source clip are unchanged");
+
+                controller.layers = new[] { baseLayer };
+                var allowed = RunPreflight();
+                Check(candidates.Count == 1 && allowed.skippedRenderers == 0,
+                      "material-swap/ordinary-state-remains-protectable",
+                      "removing the synced override leaves the same convertible FX clip eligible");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(avatar);
+                UnityEngine.Object.DestroyImmediate(controller);
+                if (state != null) UnityEngine.Object.DestroyImmediate(state);
+                UnityEngine.Object.DestroyImmediate(baseMachine);
+                UnityEngine.Object.DestroyImmediate(syncMachine);
+                UnityEngine.Object.DestroyImmediate(tree);
+                UnityEngine.Object.DestroyImmediate(clip);
+                UnityEngine.Object.DestroyImmediate(original);
+                UnityEngine.Object.DestroyImmediate(converted);
+            }
+        }
+#endif
 
         private static void TestWrongPasswordDestroys(MeshProtectRoot settings)
         {

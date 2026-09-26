@@ -1,5 +1,52 @@
 # Changelog
 
+## 1.2.1
+
+- The unlock entry's display name, parent submenu path and position can be set on Mesh Protect
+  Root. Menu paths resolve after other installers have run, and only build copies are edited.
+  Existing controls named Unlock are preserved. Explicit positions stay on the selected page
+  when it is full; the last two original controls move into More.
+  Paths support escaped slashes in names and visible labels with rich-text formatting.
+- Password, protection and preparation changes are recorded as Prefab instance overrides.
+- Shader preparation also discovers material swaps referenced by VRCFury and Modular Avatar
+  components, including controllers and clips outside the Avatar Descriptor.
+- Material-swap animations are checked before meshes are displaced. A renderer with an ignored,
+  unsupported or otherwise unrewritable material swap stays original and is named in the build
+  warnings, so switching outfits cannot put an undecoded material on its scrambled mesh.
+  This includes child Animators and legacy Animation components, using each component's animation root.
+  Unrewritten synchronized-layer material overrides also keep the affected renderer original.
+  Material swaps copy affected external blend trees even when name obfuscation or optional tree
+  copying is disabled, preserving shared references without modifying the original assets.
+- Object renaming preserves paths used by independent Animators and legacy Animation components.
+  Animation references inside external trees that are not copied retain their names. Shared state
+  behaviours stored outside their controller are also left untouched, with their referenced names preserved.
+  Playable-layer override clips and synchronized-layer overrides also preserve references that
+  the build cannot rewrite. Preparation only treats controllers with an actual copy as rewritable.
+  Older snapshots must be prepared again before adoption; builds safely fall back in the meantime.
+- Prepared controllers now track their animation dependencies and exact sub-asset identities.
+  Dependency fingerprints include referenced assets individually, so editing an external clip
+  invalidates its snapshot even when Unity leaves the controller's own import hash unchanged.
+  Builds reject stale or mismatched copies, including records restored by Undo, and recalculate
+  safe name maps against the current avatar. Distinct same-name FX clips retain their own overrides.
+  When other avatar tools replace every prepared controller, name maps are recalculated from the
+  final build controllers. Each preparation writes an independent snapshot; clearing the record
+  preserves old assets for other avatars and Undo, at the cost of additional disk space.
+  First-time preparation creates the snapshot's parent folders before allocating its path.
+- Builds with multiple Mesh Protect Root components stop and list their locations, including
+  disabled components, so the password and protection settings are never selected arbitrarily.
+- Baked mesh bounds include the original bounds as well as the displaced vertices, so unlocked
+  static accessories keep their culling bounds and artist-supplied bounds are preserved.
+- Skinning residual measurements match renamed meshes by hierarchy position, including duplicate
+  object names, and report when no vertices could be measured. A Root component on a child object
+  measures the whole Avatar.
+- Locked lilToon materials use the native invisible gate before outline, AudioLink and fur effects;
+  foreign shader grafts discard locked fragments. Existing avatars need **Advanced → Rebuild Shader**
+  once to update their generated shaders without changing the password. Older families are refused
+  with an actionable warning rather than used as though they contained the fix.
+- Generated GPU self-check probes declare the visibility input used by the shared shader code,
+  preventing a probe compilation failure from incorrectly blocking a valid avatar build.
+- Parameter-budget handling remains unchanged.
+
 ## 1.2.0
 
 - **lilToon's Tessellation is protected properly now.** A material with Tessellation switched on

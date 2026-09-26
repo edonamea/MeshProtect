@@ -20,6 +20,7 @@ namespace MeshProtect
         private static readonly string[] HiddenProperties =
         {
             "m_Script", "keyDigits", "variant",
+            "unlockMenuName", "unlockMenuPath", "unlockMenuPosition",
             // Drawn by DrawParameterBox, which also has to react to them being changed.
             "obfuscateParameterNames", "obfuscateExpressionParameters", "copySeparateBlendTrees",
             "obfuscateObjectNames",
@@ -56,6 +57,9 @@ namespace MeshProtect
             EditorGUILayout.Space();
 
             DrawPasswordBox(settings);
+            EditorGUILayout.Space();
+
+            DrawMenuBox();
             EditorGUILayout.Space();
 
             DrawAutoFixWarning();
@@ -115,7 +119,7 @@ namespace MeshProtect
                 {
                     Undo.RecordObject(settings, on ? "Enable Mesh Protect" : "Disable Mesh Protect");
                     settings.enabled = on;
-                    EditorUtility.SetDirty(settings);
+                    MeshProtectEditorSettings.Persist(settings);
                 }
 
                 if (!settings.enabled)
@@ -145,6 +149,31 @@ namespace MeshProtect
         private static void DrawAutoFixWarning()
         {
             EditorGUILayout.HelpBox(MeshProtectL10n.Tr("autofix"), MessageType.Info);
+        }
+
+        private void DrawMenuBox()
+        {
+            serializedObject.Update();
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                EditorGUILayout.LabelField(MeshProtectL10n.Tr("menu.title"), EditorStyles.boldLabel);
+                var menuName = serializedObject.FindProperty("unlockMenuName");
+                var menuPath = serializedObject.FindProperty("unlockMenuPath");
+                var position = serializedObject.FindProperty("unlockMenuPosition");
+                EditorGUILayout.PropertyField(menuName, MeshProtectL10n.TrC("menu.name", "menu.name.tip"));
+                EditorGUILayout.PropertyField(menuPath, MeshProtectL10n.TrC("menu.path", "menu.path.tip"));
+                position.intValue = Mathf.Clamp(EditorGUILayout.IntField(
+                    MeshProtectL10n.TrC("menu.position", "menu.position.tip"), position.intValue), 0, 8);
+
+                string label = string.IsNullOrWhiteSpace(menuName.stringValue)
+                    ? "Unlock" : menuName.stringValue.Trim();
+                var parents = MeshProtectMenuPath.Parse(menuPath.stringValue);
+                string route = string.Join(" → ", new[] { "Expressions" }.Concat(parents).Concat(new[] { label }));
+                EditorGUILayout.LabelField(MeshProtectL10n.Tr("menu.preview", route),
+                    EditorStyles.wordWrappedMiniLabel);
+                EditorGUILayout.HelpBox(MeshProtectL10n.Tr("menu.help"), MessageType.Info);
+            }
+            serializedObject.ApplyModifiedProperties();
         }
 
 #if LILMP_VRCSDK3_AVATARS
@@ -204,8 +233,9 @@ namespace MeshProtect
                         {
                             Undo.RecordObject(settings, "Remove Prepared Controllers");
                             MeshProtectControllers.Clear(settings);
-                            Debug.Log("[MeshProtect] Removed the prepared controllers. Your own " +
-                                      "layers will ship with their original names.");
+                            Debug.Log("[MeshProtect] Cleared this avatar's prepared-controller record. " +
+                                      "Existing snapshots were kept for other avatars and Undo. Your " +
+                                      "own layers will ship with their original names.");
                         }
                 }
             }
@@ -269,7 +299,7 @@ namespace MeshProtect
                     settings.obfuscateExpressionParameters = expressions;
                     settings.copySeparateBlendTrees = trees;
                     settings.obfuscateObjectNames = objects;
-                    EditorUtility.SetDirty(settings);
+                    MeshProtectEditorSettings.Persist(settings);
 
                     // Only when copies already exist. Preparing an avatar that never asked for it
                     // would write into the author's project because they ticked a checkbox.
@@ -563,7 +593,7 @@ namespace MeshProtect
                     {
                         Undo.RecordObject(settings, "Set Mesh Protect Password");
                         settings.keyDigits = parsed;
-                        EditorUtility.SetDirty(settings);
+                        MeshProtectEditorSettings.Persist(settings);
                         PrepareAfterThisRepaint(settings);
                     }
                 }
@@ -609,7 +639,7 @@ namespace MeshProtect
                     {
                         Undo.RecordObject(settings, "Randomise Mesh Protect Password");
                         settings.keyDigits = MeshProtectCipher.GeneratePassword(new System.Random());
-                        EditorUtility.SetDirty(settings);
+                        MeshProtectEditorSettings.Persist(settings);
                         draft = settings.KeyAsString();
                         draftError = null;
                         Debug.Log("[MeshProtect] Password set, check " +
@@ -762,6 +792,7 @@ namespace MeshProtect
                 settings.keyDigits = MeshProtectCipher.GeneratePassword(rng);
 
             settings.variant = MeshProtectVariantGenerator.Generate(rng);
+            MeshProtectEditorSettings.Persist(settings);
         }
 
         private static void Regenerate(MeshProtectRoot settings)
@@ -769,7 +800,6 @@ namespace MeshProtect
             Undo.RecordObject(settings, "Generate Mesh Protect Password");
 
             ReplaceProtection(settings, new System.Random());
-            EditorUtility.SetDirty(settings);
 
 #if LILMP_VRCSDK3_AVATARS
             // The prepared copies carry the names the old algorithm generated. Keeping them would

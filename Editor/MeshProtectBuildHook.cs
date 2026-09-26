@@ -43,7 +43,17 @@ namespace MeshProtect
 
         public bool OnPreprocessAvatar(GameObject avatarGameObject)
         {
-            var settings = avatarGameObject.GetComponentInChildren<MeshProtectRoot>(true);
+            var roots = avatarGameObject.GetComponentsInChildren<MeshProtectRoot>(true);
+            if (roots.Length > 1)
+            {
+                string locations = string.Join("\n", roots.Select(root =>
+                {
+                    string path = AnimationUtility.CalculateTransformPath(root.transform, avatarGameObject.transform);
+                    return "- " + avatarGameObject.name + (string.IsNullOrEmpty(path) ? "" : "/" + path);
+                }));
+                return Block(new[] { MeshProtectL10n.Tr("build.multipleRoots", roots.Length, locations) });
+            }
+            var settings = roots.FirstOrDefault();
 
             // Asked before the early returns below, because the case it exists for is the one that
             // takes them. If the previous release kept the shared GUID when Unity renumbered the
@@ -426,11 +436,12 @@ namespace MeshProtect
         {
             foreach (var message in messages) Debug.LogError("[MeshProtect] " + message);
 
-            EditorUtility.DisplayDialog(
-                MeshProtectL10n.Tr("dialog.blocked.title"),
-                MeshProtectL10n.Tr("dialog.blocked.body",
-                    string.Join("\n\n", messages.Select(m => "- " + m))),
-                "OK");
+            if (!Application.isBatchMode)
+                EditorUtility.DisplayDialog(
+                    MeshProtectL10n.Tr("dialog.blocked.title"),
+                    MeshProtectL10n.Tr("dialog.blocked.body",
+                        string.Join("\n\n", messages.Select(m => "- " + m))),
+                    "OK");
 
             return false;
         }
