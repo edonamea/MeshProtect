@@ -125,6 +125,11 @@ Unity 2022.3 · VRChat Avatar SDK3 · lilToon 2.x · PC용 아바타
 📋 **[CHANGELOG.md](CHANGELOG.md)** — 변경 내역
 💬 질문과 버그 리포트 — [BOOTH 상품 페이지](https://humuhumuhumu.booth.pm/items/8731588)의 문의 양식
 
+## 보안 메인테이너
+
+Humu humu(`edonamea`)는 MeshProtect 의 제작자이자 주 보안 메인테이너로서 위협 모델,
+추출 방지 아키텍처, 취약점 대응, 보안 관련 유지보수를 맡고 있습니다.
+
 ## 라이선스
 
 [MIT 라이선스](LICENSE)입니다. 도구 자체를 포함해 사용·수정·재배포·판매가 모두 자유이며,

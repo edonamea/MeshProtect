@@ -131,6 +131,12 @@ behaviour, troubleshooting
 Tests live in `Tests/Editor` behind the `LILMP_TESTS` define. Every guarantee is additionally
 checked by mutation audit: remove it from the source, and the named check has to go red.
 
+## Security Maintainer
+
+Humu humu (`edonamea`) is the creator and primary security maintainer of MeshProtect,
+responsible for its threat model, anti-extraction architecture, vulnerability handling, and
+security-related maintenance.
+
 ## Licence
 
 [MIT](LICENSE). Use, modify, redistribute and sell it, the tool itself included — keep the

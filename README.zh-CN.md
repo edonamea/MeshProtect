@@ -116,10 +116,15 @@ shader 和 C# 的密码算法放到 **GPU 上**逐一比对，把每一个烘焙
 📋 **[CHANGELOG.md](CHANGELOG.md)** —— 更新记录
 💬 提问和反馈 —— [BOOTH 商品页](https://humuhumuhumu.booth.pm/items/8731588)的联系表单
 
+## 安全维护者
+
+Humu humu（`edonamea`）是 MeshProtect 的作者和主要安全维护者，负责它的威胁模型、防提取架构、
+漏洞处理以及安全相关的维护工作。
+
 ## 授权
 
-[MIT 授权](LICENSE)：包括这个工具本身在内，可以自由使用、修改、再分发和售卖，只需在副本里保留
-版权声明和许可声明。用它做出来的东西也可以自由售卖。
+[MIT 授权](LICENSE)：包括这个工具本身在内，可以自由使用、修改、再分发和售卖，
+只需在副本里保留版权声明和许可声明。用它做出来的东西也可以自由售卖。
 
 `Shaders/Templates` 里的 lilToon 模板衍生自
 [lilxyzw/lilToon](https://github.com/lilxyzw/lilToon)（MIT），沿用该授权。位移的做法参考了
