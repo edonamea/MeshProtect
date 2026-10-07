@@ -7,7 +7,7 @@
   "author": { "name": "humuhumuhumu", "url": "https://humuhumuhumu.booth.pm/" },
   "documentationUrl": "https://github.com/edonamea/MeshProtect",
   "changelogUrl": "https://github.com/edonamea/MeshProtect/blob/main/CHANGELOG.md",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "MIT",
   "legacyPackages": [ "dev.liltoonmeshprotect" ],
   "vpmDependencies": {
     "com.vrchat.avatars": ">=3.5.0",

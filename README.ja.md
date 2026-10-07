@@ -8,7 +8,7 @@
 [![VRChat Avatar SDK3](https://img.shields.io/badge/VRChat-Avatar%20SDK3-00acc1?style=flat-square)](https://vrchat.com/)
 [![lilToon ほか 6 種](https://img.shields.io/badge/lilToon-%E3%81%BB%E3%81%8B%206%20%E7%A8%AE-e91e63?style=flat-square)](#対応シェーダー)
 [![BOOTH](https://img.shields.io/badge/BOOTH-%E7%84%A1%E6%96%99-fc4d50?style=flat-square)](https://humuhumuhumu.booth.pm/items/8731588)
-[![ライセンス](https://img.shields.io/badge/%E3%83%A9%E3%82%A4%E3%82%BB%E3%83%B3%E3%82%B9-%E3%82%BD%E3%83%BC%E3%82%B9%E5%85%AC%E9%96%8B-607d8b?style=flat-square)](LICENSE)
+[![ライセンス](https://img.shields.io/badge/%E3%83%A9%E3%82%A4%E3%82%BB%E3%83%B3%E3%82%B9-MIT-607d8b?style=flat-square)](LICENSE)
 
 </div>
 
@@ -127,8 +127,8 @@ UI は **日本語 / English / 简体中文 / 한국어** に対応し、エデ�
 
 ## ライセンス
 
-オープンソースライセンスではありません（[LICENSE](LICENSE) を参照）。ご自身のアバターへの使用は
-自由、このツールで作ったものの販売も自由、ツール本体の再配布は不可です。
+[MIT ライセンス](LICENSE)です。ツール本体を含め、使用・改変・再配布・販売はすべて自由です
+（複製物には著作権表示と許諾表示を残してください）。このツールで作ったものの販売も自由です。
 
 `Shaders/Templates` の lilToon テンプレートは
 [lilxyzw/lilToon](https://github.com/lilxyzw/lilToon)（MIT）由来で、そのライセンスに従います。

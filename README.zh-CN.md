@@ -8,7 +8,7 @@
 [![VRChat Avatar SDK3](https://img.shields.io/badge/VRChat-Avatar%20SDK3-00acc1?style=flat-square)](https://vrchat.com/)
 [![lilToon 等 7 种](https://img.shields.io/badge/lilToon-%E7%AD%89%207%20%E7%A7%8D-e91e63?style=flat-square)](#支持哪些-shader)
 [![BOOTH](https://img.shields.io/badge/BOOTH-%E5%85%8D%E8%B4%B9-fc4d50?style=flat-square)](https://humuhumuhumu.booth.pm/items/8731588)
-[![授权](https://img.shields.io/badge/%E6%8E%88%E6%9D%83-%E6%BA%90%E7%A0%81%E5%8F%AF%E8%A7%81-607d8b?style=flat-square)](LICENSE)
+[![授权](https://img.shields.io/badge/%E6%8E%88%E6%9D%83-MIT-607d8b?style=flat-square)](LICENSE)
 
 </div>
 
@@ -118,8 +118,8 @@ shader 和 C# 的密码算法放到 **GPU 上**逐一比对，把每一个烘焙
 
 ## 授权
 
-不是开源授权，见 [LICENSE](LICENSE)：可以自由用在自己的模型上，用它做出来的东西可以自由售卖，
-但不可以再分发这个工具本身。
+[MIT 授权](LICENSE)：包括这个工具本身在内，可以自由使用、修改、再分发和售卖，只需在副本里保留
+版权声明和许可声明。用它做出来的东西也可以自由售卖。
 
 `Shaders/Templates` 里的 lilToon 模板衍生自
 [lilxyzw/lilToon](https://github.com/lilxyzw/lilToon)（MIT），沿用该授权。位移的做法参考了

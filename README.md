@@ -8,7 +8,7 @@
 [![VRChat Avatar SDK3](https://img.shields.io/badge/VRChat-Avatar%20SDK3-00acc1?style=flat-square)](https://vrchat.com/)
 [![lilToon and 8 more](https://img.shields.io/badge/lilToon-and%208%20more-e91e63?style=flat-square)](#shader-support)
 [![BOOTH](https://img.shields.io/badge/BOOTH-free-fc4d50?style=flat-square)](https://humuhumuhumu.booth.pm/items/8731588)
-[![License](https://img.shields.io/badge/license-source--available-607d8b?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-607d8b?style=flat-square)](LICENSE)
 
 </div>
 
@@ -133,8 +133,8 @@ checked by mutation audit: remove it from the source, and the named check has to
 
 ## Licence
 
-Not an open-source licence — see [LICENSE](LICENSE). Free to use on your own avatars, free to
-sell what you build with it, no redistribution of the tool itself.
+[MIT](LICENSE). Use, modify, redistribute and sell it, the tool itself included — keep the
+copyright and licence notice with every copy. What you build with it is yours to sell.
 
 The lilToon shader templates in `Shaders/Templates` are derived from
 [lilxyzw/lilToon](https://github.com/lilxyzw/lilToon) (MIT). The displacement approach follows

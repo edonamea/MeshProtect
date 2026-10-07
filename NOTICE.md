@@ -1,13 +1,14 @@
 # Third-party notices / 第三者ソフトウェアの表示
 
-The tool's own terms are in [LICENSE](LICENSE), and they are **not** MIT. The
-portions listed here are, and the MIT licence requires its notice to travel with
-every copy — so it is reproduced in full below rather than pointed at.
+The tool itself is released under the MIT License — see [LICENSE](LICENSE). The
+portions listed here derive from other people's MIT-licensed work, and the MIT
+licence requires their notice to travel with every copy — so it is reproduced in
+full below rather than pointed at.
 
-本ツール自体の利用規約は [LICENSE](LICENSE) にあり、MIT ライセンスでは
-**ありません**。以下に挙げる部分は MIT ライセンスの成果物から派生しており、
-MIT ライセンスは許諾表示を複製物に添付することを求めているため、全文を
-下に掲載します。
+本ツール自体は MIT ライセンスで公開しています（[LICENSE](LICENSE) を参照）。
+以下に挙げる部分は他者の MIT ライセンスの成果物から派生しており、MIT
+ライセンスは許諾表示を複製物に添付することを求めているため、全文を下に
+掲載します。
 
 ## Portions derived from MIT-licensed work / MIT ライセンス由来の部分
 
@@ -52,5 +53,5 @@ SOFTWARE.
 
 No code from [PlagueVRC/AntiRip](https://github.com/PlagueVRC/AntiRip) is
 included. That project ships under a Non-Commercial MIT variant, and taking
-anything from it would drag that restriction onto everyone who sells an avatar
-built with this tool — which the terms in LICENSE explicitly allow.
+anything from it would drag that restriction onto the tool and onto everyone who
+sells an avatar built with it — both of which the MIT licence in LICENSE allows.

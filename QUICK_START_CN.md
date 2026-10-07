@@ -120,8 +120,8 @@ Console 会说明动画和材质名称；它在锁定时也仍可见。其他能
 
 ## 授权
 
-不是开源授权。见 [LICENSE](LICENSE)：可以自由用在自己的模型上，用它做出来的东西可以
-自由售卖，但不可以再分发插件本身。
+[MIT 授权](LICENSE)：包括插件本身在内，可以自由使用、修改、再分发和售卖，只需在副本里
+保留版权声明和许可声明。用它做出来的东西也可以自由售卖。
 
 `Shaders/Templates` 里的 lilToon 模板衍生自 [lilxyzw/lilToon](https://github.com/lilxyzw/lilToon)
 （MIT），沿用该授权。位移的做法沿用了 [rygo6/GTAvaCrypt](https://github.com/rygo6/GTAvaCrypt) 和

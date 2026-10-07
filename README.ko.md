@@ -8,7 +8,7 @@
 [![VRChat Avatar SDK3](https://img.shields.io/badge/VRChat-Avatar%20SDK3-00acc1?style=flat-square)](https://vrchat.com/)
 [![lilToon 외 6종](https://img.shields.io/badge/lilToon-%EC%99%B8%206%EC%A2%85-e91e63?style=flat-square)](#지원-셰이더)
 [![BOOTH](https://img.shields.io/badge/BOOTH-%EB%AC%B4%EB%A3%8C-fc4d50?style=flat-square)](https://humuhumuhumu.booth.pm/items/8731588)
-[![라이선스](https://img.shields.io/badge/%EB%9D%BC%EC%9D%B4%EC%84%A0%EC%8A%A4-%EC%86%8C%EC%8A%A4%20%EA%B3%B5%EA%B0%9C-607d8b?style=flat-square)](LICENSE)
+[![라이선스](https://img.shields.io/badge/%EB%9D%BC%EC%9D%B4%EC%84%A0%EC%8A%A4-MIT-607d8b?style=flat-square)](LICENSE)
 
 </div>
 
@@ -127,8 +127,8 @@ Unity 2022.3 · VRChat Avatar SDK3 · lilToon 2.x · PC용 아바타
 
 ## 라이선스
 
-오픈소스 라이선스가 아닙니다([LICENSE](LICENSE) 참조). 자신의 아바타에 쓰는 것은 자유이고,
-이 도구로 만든 것을 판매하는 것도 자유이며, 도구 자체의 재배포는 불가합니다.
+[MIT 라이선스](LICENSE)입니다. 도구 자체를 포함해 사용·수정·재배포·판매가 모두 자유이며,
+복제본에는 저작권 표시와 라이선스 고지를 남겨 주세요. 이 도구로 만든 것을 판매하는 것도 자유입니다.
 
 `Shaders/Templates` 의 lilToon 템플릿은
 [lilxyzw/lilToon](https://github.com/lilxyzw/lilToon)(MIT)에서 파생되었고 그 라이선스를 따릅니다.
