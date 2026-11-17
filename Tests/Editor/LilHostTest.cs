@@ -293,6 +293,24 @@ namespace MPTest
                                         "tessellation support)"));
                         }
 
+                        // The net under all of the above: put the ORIGINAL defect back and make
+                        // sure the merge's own compile check takes the pass out. Every shipped
+                        // container now builds, so without this the failure path of that check
+                        // is code nothing runs - and it is the only thing between the next
+                        // change a host makes to its tessellation and another avatar that is
+                        // fine on desktop and broken in a headset.
+                        if (tessRecord != null)
+                        {
+                            bool? denied = CompileCheckDeniesABrokenOverride(
+                                root, host, merged, tessRecord, out string denyDetail);
+                            if (denied == null)
+                                Note($"{family}: {denyDetail}");
+                            else
+                                Check(denied.Value,
+                                      $"{family}: an override that does not fit the host is " +
+                                      "denied by the merge's own compile check - " + denyDetail);
+                        }
+
                         // FakeShadow is the variant the renderer survey used to lose. lilSSRT's
                         // family name carries no "lilToon", and DefaultFakeShadow is the one
                         // lilToon property set without _LightMinLimit - so both clues the cheap
@@ -452,6 +470,81 @@ namespace MPTest
         }
 
         /// <summary>
+        /// Re-type the override in the merged AO tessellation Post block with lilToon's
+        /// appdataCopy - the exact defect that shipped against lilSSRT 1.4 - re-import, and run
+        /// the merge's compile check on that pass. It has to come back on the deny list with the
+        /// wrapper that rides on it. Null when this host has nothing to put back: no AO
+        /// tessellation, or a vertTess that really does return lilToon's type.
+        ///
+        /// The family is re-merged on the way out, because everything after this uses it.
+        /// </summary>
+        private static bool? CompileCheckDeniesABrokenOverride(MeshProtectRoot root,
+                                                               MeshProtectLilHost.Host host,
+                                                               string merged, string tessRecord,
+                                                               out string detail)
+        {
+            const string pass = "GTAO/ltspass_aotess_opaque";
+            const string wrapper = "GTAO/AOTessellation/Opaque";
+
+            string mergedDir = Path.GetDirectoryName(tessRecord).Replace('\\', '/');
+            string post = mergedDir + "/GTAO/lilCustomShaderInsertPost.lilblock";
+            if (!File.Exists(post))
+            {
+                detail = "no AO tessellation Post block in this host, so the compile check has " +
+                         "nothing of its own to guard";
+                return null;
+            }
+
+            string text = File.ReadAllText(post);
+            var typed = System.Text.RegularExpressions.Regex.Match(
+                text, @"^[ \t]*(\w+) vertTess\(appdata input\)",
+                System.Text.RegularExpressions.RegexOptions.Multiline);
+            if (!typed.Success || typed.Groups[1].Value == "appdataCopy")
+            {
+                detail = "this host's vertTess returns lilToon's own type, so there is no " +
+                         "mismatch to put back";
+                return null;
+            }
+
+            try
+            {
+                File.WriteAllText(post, text.Replace(typed.Groups[1].Value + " vertTess(appdata input)",
+                                                     "appdataCopy vertTess(appdata input)"));
+                AssetDatabase.ImportAsset(mergedDir, ImportAssetOptions.ImportRecursive |
+                                                     ImportAssetOptions.ForceSynchronousImport |
+                                                     ImportAssetOptions.ForceUpdate);
+
+                var hostType = typeof(MeshProtectLilHost);
+                var flags = System.Reflection.BindingFlags.NonPublic |
+                            System.Reflection.BindingFlags.Static;
+                var outcomeType = hostType.GetNestedType("TessOutcome",
+                                                         System.Reflection.BindingFlags.NonPublic);
+                var verify = hostType.GetMethod("VerifyTessellation", flags);
+                if (outcomeType == null || verify == null)
+                {
+                    detail = "MeshProtectLilHost.VerifyTessellation or TessOutcome is gone";
+                    return false;
+                }
+
+                object outcome = Activator.CreateInstance(outcomeType, true);
+                var toVerify = (System.Collections.IList)outcomeType.GetField("toVerify").GetValue(outcome);
+                toVerify.Add((pass, "Hidden/" + merged + "/" + pass));
+                verify.Invoke(null, new[] { mergedDir, merged, outcome });
+
+                string record = File.ReadAllText(tessRecord).Trim();
+                detail = "recorded: " + record;
+                var entries = record.Contains("deny=")
+                    ? record.Substring(record.IndexOf("deny=", StringComparison.Ordinal) + 5).Split(',')
+                    : new string[0];
+                return entries.Contains(pass) && entries.Contains(wrapper);
+            }
+            finally
+            {
+                MeshProtectLilHost.EnsureMerged(root, root.variant, host, out _, force: true);
+            }
+        }
+
+        /// <summary>
         /// Build the vertex stage of the first forward pass of a pass shader with one extra
         /// keyword, and hand back the first error or null. An ill-typed function fails the whole
         /// translation unit, so one stage is enough to find one.
@@ -470,10 +563,11 @@ namespace MPTest
                 var keywords = new System.Collections.Generic.List<string> { "DIRECTIONAL" };
                 if (keyword != null) keywords.Add(keyword);
 
+                // The same compiler and target the merge's own check asks for, so this cannot
+                // fail on an editor that simply has no Direct3D compiler.
+                MeshProtectLilHost.CompileTarget(out var platform, out var target);
                 var info = pass.CompileVariant(UnityEditor.Rendering.ShaderType.Vertex,
-                                               keywords.ToArray(),
-                                               UnityEditor.Rendering.ShaderCompilerPlatform.D3D,
-                                               BuildTarget.StandaloneWindows64);
+                                               keywords.ToArray(), platform, target);
                 var error = (info.Messages ?? new ShaderMessage[0]).FirstOrDefault(
                     m => m.severity == UnityEditor.Rendering.ShaderCompilerMessageSeverity.Error);
                 return string.IsNullOrEmpty(error.message) ? null : error.message;

@@ -57,7 +57,7 @@ namespace MeshProtect
         /// the eye index across the hull in a struct of its own, and against that an
         /// appdataCopy override only compiles while the two structs happen to have the same
         /// number of members - which stops being true exactly in the stereo-instanced variants.
-        /// A format 2 record is still honoured where that cannot bite (see TessRecordUsable),
+        /// A format 2 record is still honoured where that cannot bite (see UsableTessRecord),
         /// so this bump costs nobody a working tessellating variant.
         /// </summary>
         private const int TessFormat = 3;
@@ -107,12 +107,14 @@ namespace MeshProtect
             new Dictionary<string, (string, string)>();
 
         /// <summary>
-        /// Whether a merged folder's host declares a tessellation control point of its own,
-        /// keyed on the folder and remembered against its wiring record's timestamp. Asked once
-        /// per material through TessWiring, and the answer is a scan of the folder's sources.
+        /// Whether a merged folder's host declares a tessellation control point of its own.
+        /// Asked once per material through TessWiring, and the answer is a scan of the folder's
+        /// sources. Only ever asked of a folder carrying a previous-format record, and the one
+        /// thing that changes such a folder is a re-merge - which writes the current format, so
+        /// the answer cannot go stale inside a session.
         /// </summary>
-        private static readonly Dictionary<string, (long stamp, bool own)> controlPoints =
-            new Dictionary<string, (long, bool)>();
+        private static readonly Dictionary<string, bool> controlPoints =
+            new Dictionary<string, bool>();
 
         /// <summary>
         /// Every whitelisted host family in the project, found by reading the ShaderName out of
@@ -591,6 +593,10 @@ namespace MeshProtect
                     // Only the passes built on the HOST's tessellation go on to be compiled once
                     // the family is imported. The stock DefaultTessellation ones run the same
                     // text as this tool's own family, which every release is measured against.
+                    //
+                    // A pass with no resolvable suffix is left out, and that is not a gap: its
+                    // shader does not sit under the merged family's name, so MergedShaderFor
+                    // can never hand it to a material in the first place.
                     if (hostOwnTessellation && suffix != null)
                     {
                         string declared = QuotedLineValue(text, "Shader ") ?? "";
@@ -695,8 +701,7 @@ namespace MeshProtect
         {
             if (outcome.toVerify.Count == 0) return;
 
-            var platform = EditorCompilerPlatform();
-            var target = EditorUserBuildSettings.activeBuildTarget;
+            CompileTarget(out var platform, out var target);
             bool changed = false;
 
             foreach (var (suffix, shaderName) in outcome.toVerify)
@@ -710,34 +715,30 @@ namespace MeshProtect
                     var data = ShaderUtil.GetShaderData(shader);
                     if (data == null || data.SubshaderCount == 0) continue;
 
+                    // One hull pass is enough: every pass of a container is built from the same
+                    // blocks, so the override either fits all of them or none.
                     var subshader = data.GetSubshader(0);
-                    for (int p = 0; p < subshader.PassCount && failure == null; p++)
+                    var pass = Enumerable.Range(0, subshader.PassCount)
+                        .Select(subshader.GetPass)
+                        .FirstOrDefault(p => p.SourceCode != null &&
+                                             p.SourceCode.Contains("#pragma hull"));
+                    if (pass == null) continue;
+
+                    string light = pass.Name != null && pass.Name.Contains("ADD") ? "POINT"
+                                                                                  : "DIRECTIONAL";
+                    foreach (string stereo in new[] { null, "STEREO_INSTANCING_ON" })
                     {
-                        var pass = subshader.GetPass(p);
-                        string source = pass.SourceCode;
-                        if (source == null || !source.Contains("#pragma hull")) continue;
+                        var keywords = stereo == null ? new[] { light } : new[] { light, stereo };
+                        var info = pass.CompileVariant(UnityEditor.Rendering.ShaderType.Vertex,
+                                                       keywords, platform, target);
+                        var error = (info.Messages ?? new ShaderMessage[0]).FirstOrDefault(
+                            m => m.severity ==
+                                 UnityEditor.Rendering.ShaderCompilerMessageSeverity.Error);
+                        if (string.IsNullOrEmpty(error.message)) continue;
 
-                        bool additive = pass.Name != null && pass.Name.Contains("ADD");
-                        foreach (var extra in new[] { null, "STEREO_INSTANCING_ON" })
-                        {
-                            var keywords = new List<string> { additive ? "POINT" : "DIRECTIONAL" };
-                            if (extra != null) keywords.Add(extra);
-
-                            var info = pass.CompileVariant(UnityEditor.Rendering.ShaderType.Vertex,
-                                                           keywords.ToArray(), platform, target);
-                            var error = (info.Messages ?? new ShaderMessage[0]).FirstOrDefault(
-                                m => m.severity ==
-                                     UnityEditor.Rendering.ShaderCompilerMessageSeverity.Error);
-                            if (string.IsNullOrEmpty(error.message)) continue;
-
-                            failure = error.message +
-                                      (extra == null ? "" : " (in the stereo-instanced variant, " +
-                                                            "which is the one VR viewers use)");
-                            break;
-                        }
-
-                        // One hull pass is enough: every pass of a container is built from the
-                        // same blocks, so the override either fits all of them or none.
+                        failure = error.message +
+                                  (stereo == null ? "" : " (in the stereo-instanced variant, " +
+                                                         "which is the one VR viewers use)");
                         break;
                     }
                 }
@@ -763,18 +764,34 @@ namespace MeshProtect
             if (changed) WriteTessRecord(folder, mergedFamily, outcome);
         }
 
-        private static UnityEditor.Rendering.ShaderCompilerPlatform EditorCompilerPlatform()
+        /// <summary>
+        /// The compiler and build target a test compile is made for: the desktop pair of the
+        /// machine the editor is running on.
+        ///
+        /// Deliberately NOT the active build target. An author who also uploads a Quest version
+        /// has it on Android for half of every release, and Direct3D asked to build for Android
+        /// is not a question with an answer - whatever came back would be read as "this pass
+        /// does not compile" and take every tessellating variant of the family off the avatar's
+        /// next PC upload. What the check wants to know is whether the text builds for a desktop
+        /// viewer, and that does not depend on which platform the project is switched to.
+        /// </summary>
+        public static void CompileTarget(out UnityEditor.Rendering.ShaderCompilerPlatform platform,
+                                         out BuildTarget target)
         {
-            switch (SystemInfo.graphicsDeviceType)
+            switch (Application.platform)
             {
-                case UnityEngine.Rendering.GraphicsDeviceType.Metal:
-                    return UnityEditor.Rendering.ShaderCompilerPlatform.Metal;
-                case UnityEngine.Rendering.GraphicsDeviceType.Vulkan:
-                    return UnityEditor.Rendering.ShaderCompilerPlatform.Vulkan;
-                case UnityEngine.Rendering.GraphicsDeviceType.OpenGLCore:
-                    return UnityEditor.Rendering.ShaderCompilerPlatform.OpenGLCore;
+                case RuntimePlatform.OSXEditor:
+                    platform = UnityEditor.Rendering.ShaderCompilerPlatform.Metal;
+                    target = BuildTarget.StandaloneOSX;
+                    break;
+                case RuntimePlatform.LinuxEditor:
+                    platform = UnityEditor.Rendering.ShaderCompilerPlatform.Vulkan;
+                    target = BuildTarget.StandaloneLinux64;
+                    break;
                 default:
-                    return UnityEditor.Rendering.ShaderCompilerPlatform.D3D;
+                    platform = UnityEditor.Rendering.ShaderCompilerPlatform.D3D;
+                    target = BuildTarget.StandaloneWindows64;
+                    break;
             }
         }
 
@@ -995,12 +1012,12 @@ namespace MeshProtect
         {
             parameter = null;
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var pending = new Queue<(string path, string baseDir, int depth)>();
-            foreach (string block in blocks) pending.Enqueue((block, containerDir, 0));
+            var pending = new Queue<(string path, string baseDir)>();
+            foreach (string block in blocks) pending.Enqueue((block, containerDir));
 
             while (pending.Count > 0)
             {
-                var (path, baseDir, depth) = pending.Dequeue();
+                var (path, baseDir) = pending.Dequeue();
                 if (!seen.Add(path)) continue;
 
                 string source;
@@ -1013,14 +1030,13 @@ namespace MeshProtect
                     return declared.Groups[1].Value;
                 }
 
-                if (depth >= 4) continue;
                 foreach (System.Text.RegularExpressions.Match include in QuotedInclude.Matches(source))
                 {
                     string target;
                     try { target = Path.GetFullPath(Path.Combine(baseDir, include.Groups[1].Value)); }
                     catch { continue; }
                     if (File.Exists(target))
-                        pending.Enqueue((target, Path.GetDirectoryName(target), depth + 1));
+                        pending.Enqueue((target, Path.GetDirectoryName(target)));
                 }
             }
 
@@ -1039,16 +1055,7 @@ namespace MeshProtect
         /// </summary>
         private static bool DeclaresOwnControlPoint(string folder)
         {
-            long stamp = 0;
-            try
-            {
-                string record = Path.Combine(folder, TessMarkerFile);
-                if (File.Exists(record)) stamp = File.GetLastWriteTimeUtc(record).Ticks;
-            }
-            catch { /* an unreadable stamp just means the scan is not remembered */ }
-
-            if (controlPoints.TryGetValue(folder, out var known) && known.stamp == stamp)
-                return known.own;
+            if (controlPoints.TryGetValue(folder, out bool known)) return known;
 
             bool own = false;
             try
@@ -1074,7 +1081,7 @@ namespace MeshProtect
             }
             catch { own = true; }   // cannot tell, so do not vouch for the old wiring
 
-            controlPoints[folder] = (stamp, own);
+            controlPoints[folder] = own;
             return own;
         }
 

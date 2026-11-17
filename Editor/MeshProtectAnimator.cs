@@ -74,23 +74,14 @@ namespace MeshProtect
         /// It does not cover everything Generate can refuse on - a controller another tool built in
         /// memory cannot be predicted without trying to copy it - and it is not supposed to. It
         /// covers the states an avatar can simply BE in.
-        /// </summary>
-        public static bool CanGenerate(GameObject avatar, MeshProtectRoot settings, out string why)
-        {
-            bool can = CanGenerate(avatar, settings, out why, out string caution);
-            if (caution != null) Debug.LogWarning("[MeshProtect] " + caution);
-            return can;
-        }
-
-        /// <summary>
-        /// The same question, handing back what it has to SAY as well as what it decides.
         ///
-        /// <paramref name="caution"/> is the over-budget notice. It used to go straight to the
-        /// Console from in here, which is the one place the author of an avatar that will not
-        /// unlock is least likely to find it: the SDK panel is modal while this runs, and
-        /// last-upload.txt - the file they are asked to send - never had it. A report of "I
-        /// entered the password and the avatar does not appear" could not be told apart from an
-        /// over-budget upload by anything they could send. The build now puts it in the report.
+        /// <paramref name="caution"/> is the over-budget notice: something this has to SAY
+        /// without it changing the answer. It used to go straight to the Console from in here,
+        /// which is the one place the author of an avatar that will not unlock is least likely
+        /// to find it - the SDK panel is modal while this runs, and last-upload.txt, the file
+        /// they are asked to send, never had it. So "I entered the password and the avatar does
+        /// not appear" could not be told apart from an over-budget upload by anything they could
+        /// send. The build now puts it in the report.
         /// </summary>
         public static bool CanGenerate(GameObject avatar, MeshProtectRoot settings, out string why,
                                        out string caution)
@@ -350,14 +341,10 @@ namespace MeshProtect
         /// <summary>Answered once - the assembly list does not change inside a build.</summary>
         private static bool? compressorInstalled;
 
-        public static void Generate(GameObject avatar, MeshProtectRoot settings,
-                                    IList<Renderer> renderers, string folder)
-            => Generate(avatar, settings, renderers, folder, null);
-
         /// <summary>
         /// <paramref name="lockGate"/> is every renderer that would still draw on a locked avatar
-        /// and can be switched by an animation - see AddGateLayer. Null or empty adds no layer,
-        /// which is what every build did before the gate existed.
+        /// and can be switched by an animation - see AddGateLayer. Empty adds no layer, which is
+        /// what every build did before the gate existed.
         /// </summary>
         public static void Generate(GameObject avatar, MeshProtectRoot settings,
                                     IList<Renderer> renderers, string folder,
@@ -408,7 +395,7 @@ namespace MeshProtect
             rootMenu = AttachSubMenu(rootMenu, keyMenu, variant, folder, settings);
             AddPackLayers(fx, variant, paramNames, folder, writeDefaults);
             AddDecodeLayers(fx, variant, avatar, renderers, folder, writeDefaults);
-            if (lockGate != null && lockGate.Count > 0)
+            if (lockGate.Count > 0)
                 AddGateLayer(fx, variant, settings.keyDigits, avatar, lockGate, folder, writeDefaults);
 
             descriptor.expressionParameters = parameters;
@@ -953,14 +940,14 @@ namespace MeshProtect
             const string consonants = "bcdfghjklmnprstvwz";
             const string vowels = "aeiou";
 
-            var taken = new HashSet<string>(
-                (variant.packLayerNames ?? new string[0])
-                    .Concat(variant.decodeLayerNames ?? new string[0])
-                    .Concat(variant.padLayerNames ?? new string[0])
-                    .Where(n => !string.IsNullOrEmpty(n)));
+            var taken = new HashSet<string>(variant.packLayerNames
+                                                   .Concat(variant.decodeLayerNames)
+                                                   .Concat(variant.padLayerNames));
 
+            // Until a free word comes up. There are some sixty-five million of them and fifteen
+            // are taken, so "until" is the first draw in practice.
             var rng = new System.Random(unchecked(variant.macSalt * 486187739 + 0x6a7e));
-            for (int attempt = 0; attempt < 64; attempt++)
+            while (true)
             {
                 var chars = new char[8];
                 for (int i = 0; i < chars.Length; i++)
@@ -969,7 +956,6 @@ namespace MeshProtect
                 string word = new string(chars);
                 if (!taken.Contains(word)) return word;
             }
-            return "g" + unchecked((uint)variant.macSalt).ToString("x8");
         }
 
         /// <summary>
@@ -1024,10 +1010,8 @@ namespace MeshProtect
             string layerName = GateLayerName(variant);
             RemoveExistingLayer(fx, layerName);
 
-            foreach (var bit in variant.bitNames)
-                if (!fx.parameters.Any(p => p.name == bit))
-                    fx.AddParameter(bit, AnimatorControllerParameterType.Bool);
-
+            // The transport bools this reads are already on the controller: the decode layers,
+            // which always go in first, declared every one of them.
             var closedClip = BuildGateClip($"{folder}/{layerName}0.anim", avatar, gated, false);
             var openClip = BuildGateClip($"{folder}/{layerName}1.anim", avatar, gated, true);
 
@@ -1098,17 +1082,13 @@ namespace MeshProtect
                 stateMachine = stateMachine
             });
 
-            foreach (var renderer in gated)
-                if (renderer != null) renderer.enabled = false;
+            foreach (var renderer in gated) renderer.enabled = false;
         }
 
         private static AnimatorStateTransition Instant(AnimatorStateTransition transition)
         {
             transition.hasExitTime = false;
-            transition.hasFixedDuration = true;
             transition.duration = 0f;
-            transition.offset = 0f;
-            transition.canTransitionToSelf = false;
             return transition;
         }
 
@@ -1123,7 +1103,6 @@ namespace MeshProtect
 
             foreach (var renderer in gated)
             {
-                if (renderer == null) continue;
                 var binding = EditorCurveBinding.FloatCurve(
                     AnimationUtility.CalculateTransformPath(renderer.transform, avatar.transform),
                     renderer.GetType(), RendererEnabledProperty);

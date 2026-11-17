@@ -668,49 +668,8 @@ namespace MeshProtect
                 AnimationUtility.CalculateTransformPath(c.renderer.transform, avatar.transform))
                 .ToDictionary(g => g.Key, g => g.ToArray());
             var rejected = new Dictionary<Renderer, string>();
-            var layers = new List<VRC.SDK3.Avatars.Components.VRCAvatarDescriptor.CustomAnimLayer>();
-            if (descriptor.baseAnimationLayers != null) layers.AddRange(descriptor.baseAnimationLayers);
-            if (descriptor.specialAnimationLayers != null) layers.AddRange(descriptor.specialAnimationLayers);
 
-            var sources = new List<(string label, Transform root, bool canRewrite, AnimationClip[] clips)>();
-            foreach (var layer in layers)
-            {
-                if (layer.isDefault || layer.animatorController == null) continue;
-                bool canRewrite = layer.type ==
-                    VRC.SDK3.Avatars.Components.VRCAvatarDescriptor.AnimLayerType.FX;
-                if (canRewrite && layer.animatorController is
-                    UnityEditor.Animations.AnimatorController controller)
-                {
-                    // Synced overrides live on the layer, not in state.motion. The final rewrite
-                    // changes only state motions, even when the same clip occurs in both places.
-                    // An AnimatorOverrideController is different: its effective clips are all
-                    // replaced through GetOverrides/ApplyOverrides by that rewrite.
-                    var overrides = SyncedOverrideClips(controller);
-                    if (overrides.Length > 0)
-                        sources.Add(("synced layer overrides in the FX controller", avatar.transform,
-                                     false, overrides));
-                }
-                sources.Add(($"the {layer.type} layer", avatar.transform, canRewrite,
-                             layer.animatorController.animationClips));
-            }
-
-            // Child animators use paths relative to their own object, and keep their original
-            // clips. Treat their swaps like other animation layers we cannot rewrite safely.
-            foreach (var animator in avatar.GetComponentsInChildren<Animator>(true))
-            {
-                if (animator.transform == avatar.transform || animator.runtimeAnimatorController == null)
-                    continue;
-                sources.Add(($"Animator '{animator.name}'", animator.transform, false,
-                    animator.runtimeAnimatorController.animationClips));
-            }
-            foreach (var animation in avatar.GetComponentsInChildren<Animation>(true))
-            {
-                var clips = new List<AnimationClip> { animation.clip };
-                foreach (AnimationState state in animation) clips.Add(state.clip);
-                sources.Add(($"Animation '{animation.name}'", animation.transform, false, clips.ToArray()));
-            }
-
-            foreach (var source in sources)
+            foreach (var source in AnimationSources(avatar, descriptor))
             {
                 string prefix = AnimationUtility.CalculateTransformPath(source.root, avatar.transform);
                 foreach (var clip in source.clips.Where(c => c != null).Distinct())
@@ -780,6 +739,66 @@ namespace MeshProtect
             }
         }
 
+        /// <summary>
+        /// Everything on the avatar that plays animation clips, with the object each one's paths
+        /// are relative to and whether this build gets to rewrite its clips.
+        ///
+        /// One walk, because two passes need the same answer to "what animates this renderer" -
+        /// the material-swap preflight and the lock gate - and a source one of them knew about
+        /// and the other did not is how they would come to disagree. Synced layer overrides
+        /// were exactly that kind of late arrival.
+        /// </summary>
+        private static List<(string label, Transform root, bool canRewrite, AnimationClip[] clips)>
+            AnimationSources(GameObject avatar,
+                             VRC.SDK3.Avatars.Components.VRCAvatarDescriptor descriptor)
+        {
+            var sources = new List<(string label, Transform root, bool canRewrite, AnimationClip[] clips)>();
+            if (descriptor == null) return sources;
+
+            var layers = new List<VRC.SDK3.Avatars.Components.VRCAvatarDescriptor.CustomAnimLayer>();
+            if (descriptor.baseAnimationLayers != null) layers.AddRange(descriptor.baseAnimationLayers);
+            if (descriptor.specialAnimationLayers != null) layers.AddRange(descriptor.specialAnimationLayers);
+
+            foreach (var layer in layers)
+            {
+                if (layer.isDefault || layer.animatorController == null) continue;
+                bool canRewrite = layer.type ==
+                    VRC.SDK3.Avatars.Components.VRCAvatarDescriptor.AnimLayerType.FX;
+                if (canRewrite && layer.animatorController is
+                    UnityEditor.Animations.AnimatorController controller)
+                {
+                    // Synced overrides live on the layer, not in state.motion. The final rewrite
+                    // changes only state motions, even when the same clip occurs in both places.
+                    // An AnimatorOverrideController is different: its effective clips are all
+                    // replaced through GetOverrides/ApplyOverrides by that rewrite.
+                    var overrides = SyncedOverrideClips(controller);
+                    if (overrides.Length > 0)
+                        sources.Add(("synced layer overrides in the FX controller", avatar.transform,
+                                     false, overrides));
+                }
+                sources.Add(($"the {layer.type} layer", avatar.transform, canRewrite,
+                             layer.animatorController.animationClips));
+            }
+
+            // Child animators use paths relative to their own object, and keep their original
+            // clips. Treat their swaps like other animation layers we cannot rewrite safely.
+            foreach (var animator in avatar.GetComponentsInChildren<Animator>(true))
+            {
+                if (animator.transform == avatar.transform || animator.runtimeAnimatorController == null)
+                    continue;
+                sources.Add(($"Animator '{animator.name}'", animator.transform, false,
+                    animator.runtimeAnimatorController.animationClips));
+            }
+            foreach (var animation in avatar.GetComponentsInChildren<Animation>(true))
+            {
+                var clips = new List<AnimationClip> { animation.clip };
+                foreach (AnimationState state in animation) clips.Add(state.clip);
+                sources.Add(($"Animation '{animation.name}'", animation.transform, false, clips.ToArray()));
+            }
+
+            return sources;
+        }
+
         // ------------------------------------------------------------------ lock gate
 
         /// <summary>
@@ -813,8 +832,7 @@ namespace MeshProtect
 
             foreach (var renderer in avatar.GetComponentsInChildren<Renderer>(true))
             {
-                if (renderer == null || !renderer.enabled) continue;
-                if (!DrawsWhileLocked(renderer, settings, variant)) continue;
+                if (!renderer.enabled || !DrawsWhileLocked(renderer, settings, variant)) continue;
 
                 if (!settings.hideUnprotectedWhileLocked)
                 {
@@ -822,16 +840,12 @@ namespace MeshProtect
                     continue;
                 }
 
-                string path = AnimationUtility.CalculateTransformPath(renderer.transform,
-                                                                      avatar.transform);
-                var reached = string.IsNullOrEmpty(path) ? avatar.transform
-                                                         : avatar.transform.Find(path);
+                string unreachable = WhyNoPathReaches(avatar, renderer);
                 if (animated.Contains(renderer))
                     showing.Add($"'{renderer.name}' (an animation on this avatar already " +
                                 "switches this renderer on and off)");
-                else if (reached != renderer.transform)
-                    showing.Add($"'{renderer.name}' (another object at '{path}' has the same " +
-                                "name, so an animation cannot single this one out)");
+                else if (unreachable != null)
+                    showing.Add($"'{renderer.name}' ({unreachable})");
                 else
                     gate.Add(renderer);
             }
@@ -845,9 +859,11 @@ namespace MeshProtect
                     "until the password is entered, so the locked avatar shows nothing: " +
                     string.Join(", ", gate.Take(8).Select(r => $"'{r.name}'")) +
                     (gate.Count > 8 ? ", ..." : "") +
-                    ". They are HIDDEN, NOT PROTECTED - their meshes ship readable; the notes " +
-                    "here say why each could not be protected. ('Hide unprotected parts while " +
-                    "locked', under Advanced on the component, turns the hiding off.)");
+                    ". They are HIDDEN, NOT PROTECTED - their meshes ship readable. One that was " +
+                    "refused protection has a note of its own here saying why; the rest were " +
+                    "never candidates (particles, trails, shaders this tool does not carry, " +
+                    "materials on the ignore list). ('Hide unprotected parts while locked', " +
+                    "under Advanced on the component, turns the hiding off.)");
 
             if (showing.Count > 0)
                 report.warnings.Add(
@@ -892,35 +908,10 @@ namespace MeshProtect
         private static HashSet<Renderer> RenderersWithAnimatedEnable(GameObject avatar)
         {
             var found = new HashSet<Renderer>();
-            var sources = new List<(Transform root, AnimationClip[] clips)>();
-
             var descriptor = avatar.GetComponent<VRC.SDK3.Avatars.Components.VRCAvatarDescriptor>();
-            if (descriptor != null)
-            {
-                var layers = new List<VRC.SDK3.Avatars.Components.VRCAvatarDescriptor.CustomAnimLayer>();
-                if (descriptor.baseAnimationLayers != null) layers.AddRange(descriptor.baseAnimationLayers);
-                if (descriptor.specialAnimationLayers != null) layers.AddRange(descriptor.specialAnimationLayers);
-                foreach (var layer in layers)
-                    if (!layer.isDefault && layer.animatorController != null)
-                        sources.Add((avatar.transform, layer.animatorController.animationClips));
-            }
 
-            foreach (var animator in avatar.GetComponentsInChildren<Animator>(true))
+            foreach (var (_, root, _, clips) in AnimationSources(avatar, descriptor))
             {
-                if (animator.runtimeAnimatorController == null) continue;
-                sources.Add((animator.transform, animator.runtimeAnimatorController.animationClips));
-            }
-
-            foreach (var animation in avatar.GetComponentsInChildren<Animation>(true))
-            {
-                var clips = new List<AnimationClip> { animation.clip };
-                foreach (AnimationState state in animation) clips.Add(state.clip);
-                sources.Add((animation.transform, clips.ToArray()));
-            }
-
-            foreach (var (root, clips) in sources)
-            {
-                if (clips == null) continue;
                 foreach (var clip in clips.Where(c => c != null).Distinct())
                 foreach (var binding in AnimationUtility.GetCurveBindings(clip))
                 {
@@ -1683,6 +1674,28 @@ namespace MeshProtect
             return MeshProtectRoot.DisplacementMode.Normal;
         }
 
+        /// <summary>
+        /// Why an animation cannot single this renderer out by path, or null when it can.
+        ///
+        /// Everything this build adds reaches a renderer the same way - a curve bound to the
+        /// path from the avatar root - and two things defeat a path. An earlier sibling with the
+        /// same name takes the binding. And a name with a slash in it cannot be written as a
+        /// path at all, because the slash is the separator. They are different mistakes with
+        /// different fixes, so they are told apart.
+        /// </summary>
+        private static string WhyNoPathReaches(GameObject avatar, Renderer renderer)
+        {
+            string path = AnimationUtility.CalculateTransformPath(renderer.transform, avatar.transform);
+            var reached = string.IsNullOrEmpty(path) ? avatar.transform : avatar.transform.Find(path);
+            if (reached == renderer.transform) return null;
+
+            return reached == null
+                ? $"its path '{path}' cannot be followed by an animation - an object name along " +
+                  "it contains a '/', which a path reads as a separator"
+                : $"another object at '{path}' has the same name, so an animation cannot single " +
+                  "this one out";
+        }
+
         private static Mesh GetMesh(Renderer renderer)
         {
             var skinned = renderer as SkinnedMeshRenderer;
@@ -1724,16 +1737,12 @@ namespace MeshProtect
                 // receive a digit, so it would stay collapsed with the right password, for
                 // everybody, with nothing in the build to say why. Leaving it unprotected is the
                 // lesser loss, and renaming one of the two is all it takes to get it back.
-                if (why == null && avatar != null)
+                if (why == null)
                 {
-                    string path = AnimationUtility.CalculateTransformPath(renderer.transform,
-                                                                          avatar.transform);
-                    var reached = string.IsNullOrEmpty(path) ? avatar.transform
-                                                             : avatar.transform.Find(path);
-                    if (reached != renderer.transform)
-                        why = $"another object at '{path}' has the same name, so the unlock " +
-                              "animation cannot single this renderer out and it could never be " +
-                              "decoded - rename one of the two to protect it";
+                    string unreachable = WhyNoPathReaches(avatar, renderer);
+                    if (unreachable != null)
+                        why = unreachable + ". The digits travel by that path, so this renderer " +
+                              "could never be decoded - rename the object to protect it";
                 }
 
                 // The ID Mask has to be judged for the whole renderer, not per material. UV6 is
@@ -2533,8 +2542,9 @@ namespace MeshProtect
                     ? (staleWiring
                         ? $"'{source.name}' is on a tessellating variant of '{host.family}', " +
                           "and this avatar's merged family was built by a version that could " +
-                          "not yet protect this kind of tessellation (lilSSRT 1.4 changed how " +
-                          "its own is put together). That sub-mesh ships UNPROTECTED and " +
+                          "not yet protect this kind of tessellation - or, for a product that " +
+                          "builds its own the way lilSSRT 1.4 does, could not do it correctly. " +
+                          "That sub-mesh ships UNPROTECTED and " +
                           "intact. Press " +
                           "'Rebuild Shader', under 'Advanced' on the Mesh Protect Root " +
                           "component, then upload again - the rebuilt family protects it."

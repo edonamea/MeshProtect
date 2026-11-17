@@ -217,8 +217,8 @@ namespace MPTest
                       "then the controller, which ships, holds part of the password");
 
                 // And it closes again when the saved parameters are wiped under it.
-                var state = Walk(layer, fixture.variant, layer.stateMachine.defaultState, right);
-                state = Walk(layer, fixture.variant, state, none);
+                var state = Walk(fixture.variant, layer.stateMachine.defaultState, right);
+                state = Walk(fixture.variant, state, none);
                 Check(state != null && state.motion == closed, "gate/closes-again-on-reset",
                       "Reset Avatar Data clears the transport bits while the gate is open");
 
@@ -323,8 +323,8 @@ namespace MPTest
         /// Follow satisfied transitions from a state until none fires. Null means the machine
         /// never settled, which on an avatar is a renderer flickering every frame.
         /// </summary>
-        private static AnimatorState Walk(AnimatorControllerLayer layer, MeshProtectVariant variant,
-                                          AnimatorState from, bool[] bits)
+        private static AnimatorState Walk(MeshProtectVariant variant, AnimatorState from,
+                                          bool[] bits)
         {
             var index = new Dictionary<string, int>(StringComparer.Ordinal);
             for (int i = 0; i < variant.bitNames.Length; i++) index[variant.bitNames[i]] = i;
@@ -356,7 +356,7 @@ namespace MPTest
         private static bool IsOpen(AnimatorControllerLayer layer, MeshProtectVariant variant,
                                    bool[] bits, AnimationClip open)
         {
-            var settled = Walk(layer, variant, layer.stateMachine.defaultState, bits);
+            var settled = Walk(variant, layer.stateMachine.defaultState, bits);
             if (settled == null) throw new Exception("the gate never settled - it would flicker");
             return settled.motion == open;
         }
