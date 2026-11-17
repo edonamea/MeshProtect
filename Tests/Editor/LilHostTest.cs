@@ -563,11 +563,10 @@ namespace MPTest
                 var keywords = new System.Collections.Generic.List<string> { "DIRECTIONAL" };
                 if (keyword != null) keywords.Add(keyword);
 
-                // The same compiler and target the merge's own check asks for, so this cannot
-                // fail on an editor that simply has no Direct3D compiler.
-                MeshProtectLilHost.CompileTarget(out var platform, out var target);
                 var info = pass.CompileVariant(UnityEditor.Rendering.ShaderType.Vertex,
-                                               keywords.ToArray(), platform, target);
+                                               keywords.ToArray(),
+                                               UnityEditor.Rendering.ShaderCompilerPlatform.D3D,
+                                               BuildTarget.StandaloneWindows64);
                 var error = (info.Messages ?? new ShaderMessage[0]).FirstOrDefault(
                     m => m.severity == UnityEditor.Rendering.ShaderCompilerMessageSeverity.Error);
                 return string.IsNullOrEmpty(error.message) ? null : error.message;

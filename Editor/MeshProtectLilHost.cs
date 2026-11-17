@@ -693,15 +693,19 @@ namespace MeshProtect
         /// and broken for half the room.
         ///
         /// Only the vertex stage: the override is a vertex function, and an ill-typed function
-        /// fails the whole translation unit whichever stage is asked for. A compile that could
-        /// not be run at all - a platform this editor has no compiler for - proves nothing and
-        /// denies nothing.
+        /// fails the whole translation unit whichever stage is asked for. A compile that comes
+        /// back with no error message proves nothing and denies nothing.
         /// </summary>
         private static void VerifyTessellation(string folder, string mergedFamily, TessOutcome outcome)
         {
             if (outcome.toVerify.Count == 0) return;
 
-            CompileTarget(out var platform, out var target);
+            // Always Direct3D for Windows: the PC client is the only place a protected avatar
+            // runs. Not the active build target - that would make the answer depend on which
+            // platform the project happens to be switched to when the button is pressed.
+            const UnityEditor.Rendering.ShaderCompilerPlatform platform =
+                UnityEditor.Rendering.ShaderCompilerPlatform.D3D;
+            const BuildTarget target = BuildTarget.StandaloneWindows64;
             bool changed = false;
 
             foreach (var (suffix, shaderName) in outcome.toVerify)
@@ -762,37 +766,6 @@ namespace MeshProtect
             }
 
             if (changed) WriteTessRecord(folder, mergedFamily, outcome);
-        }
-
-        /// <summary>
-        /// The compiler and build target a test compile is made for: the desktop pair of the
-        /// machine the editor is running on.
-        ///
-        /// Deliberately NOT the active build target. An author who also uploads a Quest version
-        /// has it on Android for half of every release, and Direct3D asked to build for Android
-        /// is not a question with an answer - whatever came back would be read as "this pass
-        /// does not compile" and take every tessellating variant of the family off the avatar's
-        /// next PC upload. What the check wants to know is whether the text builds for a desktop
-        /// viewer, and that does not depend on which platform the project is switched to.
-        /// </summary>
-        public static void CompileTarget(out UnityEditor.Rendering.ShaderCompilerPlatform platform,
-                                         out BuildTarget target)
-        {
-            switch (Application.platform)
-            {
-                case RuntimePlatform.OSXEditor:
-                    platform = UnityEditor.Rendering.ShaderCompilerPlatform.Metal;
-                    target = BuildTarget.StandaloneOSX;
-                    break;
-                case RuntimePlatform.LinuxEditor:
-                    platform = UnityEditor.Rendering.ShaderCompilerPlatform.Vulkan;
-                    target = BuildTarget.StandaloneLinux64;
-                    break;
-                default:
-                    platform = UnityEditor.Rendering.ShaderCompilerPlatform.D3D;
-                    target = BuildTarget.StandaloneWindows64;
-                    break;
-            }
         }
 
         /// <summary>
