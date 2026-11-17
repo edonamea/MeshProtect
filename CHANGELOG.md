@@ -1,5 +1,44 @@
 # Changelog
 
+## 1.3.0
+
+- **Every shader that carries the decode is now measured before it is used, instead of being
+  trusted.** Until now a shader was protected because this tool knew its name, and whether the
+  decode still fitted it was settled by checks written against the version of that shader the
+  tool was built with. lilSSRT 1.4 showed what that costs: the merge succeeded, the desktop
+  variant compiled, and the avatar was broken for everybody in a headset. Each material's
+  decode shader is now compiled, pass by pass, for the desktop and for the stereo-instanced
+  variant VR uses, and then drawn - the original over a plain mesh, the decode shader over a
+  displaced one, unlocked and locked - and the pictures are compared. A shader that does not
+  compile where its original does, or that does not draw what its original draws once
+  unlocked, is refused: that material ships unprotected and intact, the lock gate keeps it
+  hidden, and the report carries the compiler's own error.
+- What this changes about updates: a new version of lilToon, lilSSRT, Poiyomi or any other
+  supported shader can still cost a material its protection until this tool catches up, but
+  it can no longer produce an avatar that is protected and broken. If the report says a
+  shader did not pass the check, send last-upload.txt - it has everything needed.
+- The check runs in the build and when 'Rebuild Shader' or 'Generate Password' is pressed,
+  where anything it refuses is named in the Console before any upload. Compiling takes
+  several seconds per shader the first time and is not repeated until that shader's source
+  changes - read off the preprocessed source itself, so an updated include, lilToon
+  regenerating its settings and a new version of a host shader all count. The pictures are
+  taken on every build, which costs a fraction of a second per shader. A refusal is never
+  remembered.
+- A pass that still draws something while the avatar is locked is reported and not refused.
+  The mesh is still protected, and leaving it readable to hide a few pixels would be the
+  worse trade.
+- Only passes VRChat can run are checked. lilToon puts a pass that never runs into every
+  shader, and its own build-time optimisation leaves that pass uncompilable in every custom
+  family - harmless, and not a reason to refuse anything. Materials with GPU instancing
+  ticked have their instanced variants compiled as well.
+- What the check does not cover: the light, shadow and fog keyword combinations beyond one
+  per pass, and anything a later build step changes after this tool has run. It was measured
+  once more on lilToon and lilSSRT shaders as lilToon's optimisation leaves them for the
+  bundle, and they pass.
+- last-upload.txt says how many shaders were checked, how many were measured in that upload
+  and how many were refused, so a report from a version that checks can be told apart from
+  one that did not.
+
 ## 1.2.2
 
 - **lilSSRT 1.4 no longer breaks for VR viewers** (tested on 1.4.3). lilSSRT 1.4 changed how its

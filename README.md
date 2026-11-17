@@ -78,6 +78,12 @@ nothing to toggle between the two builds.
 A material the graft cannot cover in full ships unprotected and named in the Console, rather than
 broken. Anything on a shader outside that list is left exactly as it was — never damaged.
 
+None of this is taken on trust. Before a material is moved onto a shader that carries the decode,
+that shader is compiled for desktop and for VR and drawn next to its original, locked and
+unlocked. One that does not compile, or does not draw what its original draws, is refused and its
+material ships unprotected and intact — so an update to any of these shaders can cost a material
+its protection until this tool catches up, but cannot leave you with a broken avatar.
+
 Whatever ends up unprotected is kept switched off until the password is entered, so a locked
 avatar shows nothing at all rather than its leftovers. That is hiding, not protection — those
 meshes still ship readable — and *Hide unprotected parts while locked* (Advanced) turns it off.

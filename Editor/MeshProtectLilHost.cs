@@ -693,19 +693,18 @@ namespace MeshProtect
         /// and broken for half the room.
         ///
         /// Only the vertex stage: the override is a vertex function, and an ill-typed function
-        /// fails the whole translation unit whichever stage is asked for. A compile that comes
-        /// back with no error message proves nothing and denies nothing.
+        /// fails the whole translation unit whichever stage is asked for.
+        ///
+        /// MeshProtectShaderCheck asks the same question again in every build, of whichever
+        /// shader a material is about to be moved onto. This one stays because it answers
+        /// earlier and more usefully: at the button, for every tessellating variant whether a
+        /// material wears it yet or not, and into the deny list - so the refusal the author
+        /// reads names the tessellation switch that gets them their protection back.
         /// </summary>
         private static void VerifyTessellation(string folder, string mergedFamily, TessOutcome outcome)
         {
             if (outcome.toVerify.Count == 0) return;
 
-            // Always Direct3D for Windows: the PC client is the only place a protected avatar
-            // runs. Not the active build target - that would make the answer depend on which
-            // platform the project happens to be switched to when the button is pressed.
-            const UnityEditor.Rendering.ShaderCompilerPlatform platform =
-                UnityEditor.Rendering.ShaderCompilerPlatform.D3D;
-            const BuildTarget target = BuildTarget.StandaloneWindows64;
             bool changed = false;
 
             foreach (var (suffix, shaderName) in outcome.toVerify)
@@ -728,21 +727,16 @@ namespace MeshProtect
                                              p.SourceCode.Contains("#pragma hull"));
                     if (pass == null) continue;
 
-                    string light = pass.Name != null && pass.Name.Contains("ADD") ? "POINT"
-                                                                                  : "DIRECTIONAL";
-                    foreach (string stereo in new[] { null, "STEREO_INSTANCING_ON" })
+                    foreach (bool stereo in new[] { false, true })
                     {
-                        var keywords = stereo == null ? new[] { light } : new[] { light, stereo };
-                        var info = pass.CompileVariant(UnityEditor.Rendering.ShaderType.Vertex,
-                                                       keywords, platform, target);
-                        var error = (info.Messages ?? new ShaderMessage[0]).FirstOrDefault(
-                            m => m.severity ==
-                                 UnityEditor.Rendering.ShaderCompilerMessageSeverity.Error);
-                        if (string.IsNullOrEmpty(error.message)) continue;
+                        string error = MeshProtectShaderCheck.CompileError(
+                            pass, UnityEditor.Rendering.ShaderType.Vertex,
+                            MeshProtectShaderCheck.VariantKeywords(pass, null, stereo));
+                        if (error == null) continue;
 
-                        failure = error.message +
-                                  (stereo == null ? "" : " (in the stereo-instanced variant, " +
-                                                         "which is the one VR viewers use)");
+                        failure = error +
+                                  (stereo ? " (in the stereo-instanced variant, which is the " +
+                                            "one VR viewers use)" : "");
                         break;
                     }
                 }

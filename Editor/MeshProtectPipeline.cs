@@ -104,6 +104,17 @@ namespace MeshProtect
             /// report answer that question by itself.
             /// </summary>
             public readonly List<string> roster = new List<string>();
+
+            /// <summary>
+            /// What the shader check answered for every conversion this build asked it about,
+            /// one entry per source shader, decode shader and keyword set. Kept here so twenty
+            /// materials on one shader ask once, and so the report can say that the check ran
+            /// and what it found - a refusal with no trace of the measurement behind it reads
+            /// like the tool changing its mind.
+            /// </summary>
+            public readonly Dictionary<string, MeshProtectShaderCheck.Verdict> shaderChecks =
+                new Dictionary<string, MeshProtectShaderCheck.Verdict>();
+
             public double worstRestoreError;
             public double worstBlendShapeError;
             public int blendShapeFramesChecked;
@@ -2387,6 +2398,8 @@ namespace MeshProtect
                 return null;
             }
 
+            if (FailsShaderCheck(source, copy, path, settings, variant, report)) return null;
+
             // Viewers who have custom shaders switched off - safety settings, performance rank
             // blocking - get VRChat's fallback shader, which does not run the decode. Without this
             // tag they would see the scrambled mesh: a cloud of noise, for people who explicitly
@@ -2564,6 +2577,8 @@ namespace MeshProtect
                 return null;
             }
 
+            if (FailsShaderCheck(source, copy, path, settings, variant, report)) return null;
+
             // Custom shaders off means VRChat's fallback, which does not run the decode: the
             // host's own fallback tag would draw the displaced mesh as noise at exactly the
             // people who asked not to render it.
@@ -2615,6 +2630,8 @@ namespace MeshProtect
                 return null;
             }
 
+            if (FailsShaderCheck(source, copy, path, settings, variant, report)) return null;
+
             // Viewers with custom shaders switched off get VRChat's fallback, which does not run
             // the decode. Poiyomi's own tag asks for Standard, which would draw the displaced mesh
             // as a cloud of noise at exactly the people who asked not to render this shader.
@@ -2629,6 +2646,76 @@ namespace MeshProtect
             copy.SetVector(variant.macProperty, MeshProtectCipher.MacToVector(macValue));
 
             return copy;
+        }
+
+        /// <summary>
+        /// The last thing every conversion passes through, whichever of the three roads it
+        /// took: the copy is on a shader that claims to carry the decode, and this is where
+        /// that claim is measured - see MeshProtectShaderCheck for what and why.
+        ///
+        /// A refusal here ends like every other one in this file. The copy is deleted, the
+        /// slot keeps the author's material, the vertices under it are left where they are,
+        /// and the lock gate takes the renderer if it is allowed to.
+        /// </summary>
+        private static bool FailsShaderCheck(Material source, Material copy, string path,
+                                             MeshProtectRoot settings, MeshProtectVariant variant,
+                                             Report report)
+        {
+            int answered = report.shaderChecks.Count;
+            var verdict = MeshProtectShaderCheck.Measure(source, copy, settings, variant,
+                                                         report.shaderChecks);
+
+            // A note is about the shader, not the material, so it is said by the one call
+            // that put the answer among this build's - not once for every material on it.
+            if (!verdict.Failed)
+            {
+                if (verdict.caution != null && report.shaderChecks.Count > answered)
+                    report.warnings.Add(verdict.ToString() + ". The material is protected.");
+                return false;
+            }
+
+            AssetDatabase.DeleteAsset(path);
+            report.warnings.Add(
+                $"'{source.name}' was left UNPROTECTED because '{source.shader.name}' did not " +
+                $"pass the check this build runs on every shader that carries the decode: " +
+                $"{verdict.failure}. Nothing is broken - that sub-mesh ships exactly as it is in " +
+                "your project, readable, instead of protected and wrong in game. It usually " +
+                "means that shader, or lilToon, is a version newer than this tool has been " +
+                "taught; press 'Rebuild Shader' on the Mesh Protect Root component once, and " +
+                "if this line is still here on the next upload, please report it together " +
+                "with Generated/last-upload.txt.");
+            return true;
+        }
+
+        /// <summary>
+        /// Ask the shader check about every material this avatar can wear, before any upload.
+        ///
+        /// Rebuild Shader runs this so the wait and the answers land at the button rather
+        /// than in the middle of a build. It goes through the real conversion on purpose -
+        /// a second, lighter way of deciding which shader a material moves onto would be a
+        /// second thing to keep in step with the first - so <paramref name="folder"/> has to
+        /// be a scratch folder the caller deletes.
+        ///
+        /// Only what the check said comes back. Every other reason a material is refused has
+        /// its line in the upload report already, and repeating those at a button would bury
+        /// the one thing this is run for.
+        /// </summary>
+        public static List<string> CheckShaders(GameObject avatar, MeshProtectRoot settings,
+                                                string folder)
+        {
+            var variant = settings.variant;
+            uint mac = MeshProtectCipher.Mac(
+                MeshProtectCipher.PackDigits(settings.keyDigits, variant), variant);
+
+            var report = new Report();
+            foreach (var material in MeshProtectMaterialDiscovery.Collect(avatar))
+                if (CanCarryTheDecode(material) &&
+                    !settings.ignoredMaterials.Contains(material) &&
+                    !IsProtectShader(material, variant.shaderName))
+                    ConvertMaterial(material, settings, variant, mac, folder, report);
+
+            return report.shaderChecks.Values.Where(v => v.Failed || v.caution != null)
+                                             .Select(v => v.ToString()).ToList();
         }
 
         /// <summary>

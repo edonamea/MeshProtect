@@ -398,6 +398,20 @@ namespace MeshProtect
                     }
                 }
 
+                // That the check ran, and on how much, is worth a line even when it found
+                // nothing: a report without it cannot be told from one written by a version
+                // that did not check at all.
+                if (report.shaderChecks.Count > 0)
+                {
+                    var checks = report.shaderChecks.Values;
+                    text.AppendLine();
+                    text.AppendLine(
+                        $"Shader check: {checks.Count} shader(s) drawn next to their originals, " +
+                        $"locked and unlocked. {checks.Count(c => c.compiled)} compiled for " +
+                        "desktop and VR in this upload, the rest unchanged since they last " +
+                        $"compiled. {checks.Count(c => c.Failed)} refused.");
+                }
+
                 text.AppendLine();
                 if (warnings == null || warnings.Count == 0)
                 {
@@ -430,7 +444,7 @@ namespace MeshProtect
             report.warnings.Clear();
         }
 
-        private static string CreateTempFolder()
+        internal static string CreateTempFolder()
         {
             // Level by level: the root now sits inside the plugin folder, and
             // AssetDatabase.CreateFolder makes exactly one level per call.
@@ -448,7 +462,7 @@ namespace MeshProtect
             return TempRoot + "/" + name;
         }
 
-        private static void CleanUp(string folder)
+        internal static void CleanUp(string folder)
         {
             if (!string.IsNullOrEmpty(folder) && AssetDatabase.IsValidFolder(folder))
                 AssetDatabase.DeleteAsset(folder);

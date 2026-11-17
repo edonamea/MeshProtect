@@ -795,6 +795,10 @@ namespace MeshProtect
         ///
         /// A shader that cannot be grafted is reported and nothing else happens: those materials
         /// ship unprotected, which is a smaller loss than an author who cannot upload.
+        ///
+        /// Then every shader the avatar's materials would be moved onto is measured against the
+        /// one it was made from, so a shader that does not fit is named here and not first in
+        /// an upload report.
         /// </summary>
         private static void RebuildGrafts(MeshProtectRoot settings, bool force)
         {
@@ -827,6 +831,18 @@ namespace MeshProtect
                 MeshProtectLilHost.Forget();
                 MeshProtectLilHost.EnsureAllMerged(
                     settings, settings.variant, owner, problems, force);
+
+#if LILMP_VRCSDK3_AVATARS
+                // Last, once every shader a material can be moved onto exists. Pressing the
+                // button is somebody saying the shaders are wrong, so nothing that passed
+                // before is taken on trust; generating a password asks only about what is new.
+                if (force) MeshProtectShaderCheck.Forget();
+                // The whole scratch root goes afterwards, as it does after a build: nothing
+                // else can be using it while somebody is pressing a button.
+                string scratch = MeshProtectBuildHook.CreateTempFolder();
+                try { problems.AddRange(MeshProtectPipeline.CheckShaders(owner, settings, scratch)); }
+                finally { MeshProtectBuildHook.CleanUp(MeshProtectBuildHook.TempRoot); }
+#endif
             }
             finally
             {

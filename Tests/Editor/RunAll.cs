@@ -59,6 +59,7 @@ namespace MPTest
             failed += Report("UnlockChainTest",      UnlockChainTest.RunCore());
 #if LILMP_VRCSDK3_AVATARS
             failed += Report("LockGateTest",         LockGateTest.RunCore());
+            failed += Report("ShaderCheckTest",      ShaderCheckTest.RunCore());
 #endif
             failed += Report("BundleRoundTripTest",  BundleRoundTripTest.RunCore());
 
