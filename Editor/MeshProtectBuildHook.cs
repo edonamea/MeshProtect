@@ -222,15 +222,24 @@ namespace MeshProtect
                           // "Protected 12 mesh(es)" on an avatar where nine renderers were left
                           // alone, and every reason is a warning further up that they scrolled past.
                           (report.skippedRenderers > 0
-                              ? $" {report.skippedRenderers} renderer(s) were LEFT UNPROTECTED and " +
-                                "will be visible while the avatar is locked - the warnings above " +
-                                "say which and why."
+                              ? $" {report.skippedRenderers} renderer(s) were LEFT UNPROTECTED - " +
+                                "the warnings above say which and why."
                               : "") +
                           (report.unprotectedSubMeshes > 0
                               ? $" {report.unprotectedSubMeshes} sub-mesh(es) on " +
                                 $"{report.unprotectedSubMeshRenderers} renderer(s) ship " +
-                                "UNPROTECTED and stay visible while the avatar is locked - the " +
-                                "warnings above say which and why."
+                                "UNPROTECTED - the warnings above say which and why."
+                              : "") +
+                          // What a locked avatar actually shows, which is its own question now:
+                          // the lock gate switches off what the decode cannot hide, so "left
+                          // unprotected" no longer means "left standing there".
+                          (report.hiddenWhileLocked > 0
+                              ? $" {report.hiddenWhileLocked} unprotected renderer(s) are kept " +
+                                "switched off until the password is entered (hidden, not protected)."
+                              : "") +
+                          (report.visibleWhileLocked > 0
+                              ? $" {report.visibleWhileLocked} renderer(s) stay VISIBLE while the " +
+                                "avatar is locked."
                               : ""));
 
                 WriteReport(settings, avatarGameObject, report, spoken, true);
@@ -238,6 +247,12 @@ namespace MeshProtect
                 AssetDatabase.SaveAssets();
 
                 bool allowed = ValidateOnly(avatarGameObject, variant);
+
+                // Only for a build that is going ahead: this is what the inspector compares the
+                // password on screen against, and a refused build produced no avatar to compare.
+                if (allowed)
+                    MeshProtectBuildMemory.Remember(
+                        variant, MeshProtectCipher.CheckCode(settings.keyDigits, variant));
 
                 // Blocking returns false, the build stops, and the postprocess callback that
                 // normally removes this folder never runs. The exception path below already
@@ -359,11 +374,18 @@ namespace MeshProtect
                                     "  (the component shows the same four characters)");
                     if (report.skippedRenderers > 0)
                         text.AppendLine($"{report.skippedRenderers} renderer(s) were left " +
-                                        "unprotected and will be visible while the avatar is locked.");
+                                        "unprotected.");
                     if (report.unprotectedSubMeshes > 0)
                         text.AppendLine($"{report.unprotectedSubMeshes} sub-mesh(es) on " +
                                         $"{report.unprotectedSubMeshRenderers} renderer(s) ship " +
-                                        "unprotected and stay visible while the avatar is locked.");
+                                        "unprotected.");
+                    if (report.hiddenWhileLocked > 0)
+                        text.AppendLine($"{report.hiddenWhileLocked} unprotected renderer(s) are " +
+                                        "kept switched off until the password is entered " +
+                                        "(hidden, not protected).");
+                    if (report.visibleWhileLocked > 0)
+                        text.AppendLine($"{report.visibleWhileLocked} renderer(s) stay visible " +
+                                        "while the avatar is locked.");
 
                     // The roster answers the question every screenshot round-trip stalls on:
                     // which renderer is this, and what did the build do to it?

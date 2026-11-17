@@ -1,5 +1,52 @@
 # Changelog
 
+## 1.2.2
+
+- **lilSSRT 1.4 no longer breaks for VR viewers** (tested on 1.4.3). lilSSRT 1.4 changed how its
+  AO tessellation hands vertices to the hull stage, and the decode wired in front of it still
+  assumed the earlier shape. That mismatch compiles for desktop viewers and in the editor and
+  fails in the stereo-instanced variant VR uses - so a protected lilSSRT avatar looked right to
+  its author and its AO materials, which lilSSRT puts on these shaders BY ITSELF with default
+  settings, did not compile for anybody in a headset. Nothing at build time said so. The wiring
+  now reads the type off the installed lilSSRT instead of assuming it, and every tessellating
+  pass built on a host's own tessellation is test-compiled in both variants when the merged
+  family is made: one that fails goes on the deny list and ships unprotected and intact, rather
+  than protected and broken.
+- **Avatars using lilSSRT 1.4: press 'Rebuild Shader' once** (under 'Advanced'). Until you do,
+  their AO-tessellating materials are refused with a warning that names them and ship
+  unprotected and intact. Merged families of lilSSAO and of lilSSRT before 1.4 were wired
+  correctly and keep working without a rebuild.
+- **A locked avatar now shows nothing at all.** The lock is a shader effect, so on its own it
+  only hides what it protects - and whatever was not protected kept drawing: a body on an
+  unsupported shader, a renderer left alone over a material swap, accessories, particles.
+  Reported as the head and the clothes vanishing and the body left standing there. 'Hide
+  unprotected parts while locked' (Advanced, on by default) adds one FX layer that keeps those
+  renderers switched off until the password is in. It applies to existing avatars on their next
+  upload with nothing to press. It hides and does not protect - those meshes ship as readable
+  as before, and the upload report says so every time.
+- That layer cannot check the password - an animator that could would have it written into a
+  controller that ships - so it opens when every digit the password uses has been entered. A
+  complete WRONG password therefore shows the unprotected parts on their own until it is
+  corrected, and the layer's conditions tell anyone who opens the controller how many digits
+  the password has (not which). A renderer whose enabled flag an animation already drives, or
+  that shares its name and path with an earlier sibling, is left visible and named.
+- **The inspector spells out how to enter the password**, with your own digits: which entry to
+  open and which number to press. In game the unlock menu shows entries 1-6 holding buttons
+  1-8, and nothing there says the first number is a position and the second a digit.
+- The unlock entry's name, parent path and position are folded away as optional. Left alone
+  they add 'Unlock' at the end of the root menu, which is what almost everybody wants; the
+  line that stays visible says where the entry will be.
+- **A password changed after uploading is pointed out.** The password field is live, and the
+  avatar already in VRChat only opens with the password it was uploaded with. The inspector
+  now warns when the one on screen is not the one the last build used.
+- A renderer that shares its name and path with an earlier sibling is no longer displaced. The
+  digits reach a renderer through an animation path, and two siblings with one name have one
+  path, so the second could never be decoded - it would have stayed collapsed with the right
+  password. It now ships unprotected and is named in the report; renaming one of the two
+  protects it.
+- The over-budget expression parameter notice goes into last-upload.txt as well as the
+  Console, so an avatar that will not unlock for that reason can be told apart from the rest.
+
 ## 1.2.1
 
 - The unlock entry's display name, parent submenu path and position can be set on Mesh Protect

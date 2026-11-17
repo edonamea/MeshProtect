@@ -77,6 +77,7 @@ namespace MeshProtect
                 variant.packLayerNames
                     .Concat(variant.decodeLayerNames)
                     .Concat(variant.padLayerNames)
+                    .Concat(new[] { MeshProtectAnimator.GateLayerName(variant) })
                     .Where(n => !string.IsNullOrEmpty(n)));
 
             var namer = new Namer(variant.macSalt, reserved);

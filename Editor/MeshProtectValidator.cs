@@ -457,6 +457,68 @@ namespace MeshProtect
                     $"FX layer '{name}' does not start locked. " +
                     "The default state must always carry the locked value.", true));
             }
+
+            ValidateLockGate(avatar, descriptor, variant, issues);
+        }
+
+        /// <summary>
+        /// The lock gate, checked for the one way it can cost an avatar a piece of itself.
+        ///
+        /// It ships its renderers switched OFF and turns them back on by animation. A curve that
+        /// reaches nothing - a path that stopped matching after a rename, a component that is
+        /// not there - is therefore not a part that shows too early, it is a part that never
+        /// shows at all, with the right password and for everybody. That is worth stopping an
+        /// upload over, exactly as a digit curve that reaches nothing is.
+        ///
+        /// A default state that switches something ON is the opposite mistake and only costs the
+        /// hiding, so it is said and not blocked.
+        /// </summary>
+        private static void ValidateLockGate(GameObject avatar, VRCAvatarDescriptor descriptor,
+                                             MeshProtectVariant variant, List<Issue> issues)
+        {
+            string gateName = MeshProtectAnimator.GateLayerName(variant);
+            var said = new HashSet<string>();
+
+            foreach (var layer in CollectFXLayers(descriptor))
+            {
+                if (layer.name != gateName || layer.stateMachine == null) continue;
+
+                foreach (var child in layer.stateMachine.states)
+                {
+                    var clip = child.state == null ? null : child.state.motion as AnimationClip;
+                    if (clip == null) continue;
+                    bool isDefault = child.state == layer.stateMachine.defaultState;
+
+                    foreach (var binding in AnimationUtility.GetCurveBindings(clip))
+                    {
+                        if (binding.propertyName != MeshProtectAnimator.RendererEnabledProperty)
+                            continue;
+
+                        var target = string.IsNullOrEmpty(binding.path)
+                            ? avatar.transform
+                            : avatar.transform.Find(binding.path);
+                        if (target == null || binding.type == null ||
+                            target.GetComponent(binding.type) == null)
+                        {
+                            string message =
+                                $"The lock gate switches a {(binding.type == null ? "renderer" : binding.type.Name)} " +
+                                $"at '{binding.path}' back on, but there is none at that path on this " +
+                                "avatar. That renderer ships switched off, so it would never be shown.";
+                            if (said.Add(message)) issues.Add(new Issue(message, true));
+                            continue;
+                        }
+
+                        if (!isDefault) continue;
+                        var curve = AnimationUtility.GetEditorCurve(clip, binding);
+                        if (curve == null || curve.length == 0 || curve.Evaluate(0f) < 0.5f) continue;
+
+                        string early =
+                            $"The lock gate's starting state switches '{binding.path}' on, so that " +
+                            "renderer shows on a locked avatar.";
+                        if (said.Add(early)) issues.Add(new Issue(early, false));
+                    }
+                }
+            }
         }
 
         /// <summary>

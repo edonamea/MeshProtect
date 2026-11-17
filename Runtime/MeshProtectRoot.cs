@@ -282,6 +282,30 @@ namespace MeshProtect
         [Range(0, 8)]
         public int unlockMenuPosition;
 
+        /// <summary>
+        /// Keep everything this build could NOT protect switched off until the password is in.
+        ///
+        /// The lock is a vertex shader effect, so on its own it only hides what wears the decode.
+        /// An avatar is rarely all of that: a body on a shader this tool does not carry, a
+        /// renderer left alone because an animation swaps its materials, particles, a part the
+        /// author ignored on purpose. Those kept drawing, and what a locked avatar then showed
+        /// was whatever happened to be left over - reported, by the people it happened to, as
+        /// "the head and the clothes vanish and the body stands there naked".
+        ///
+        /// On by default, and a field initialiser rather than a migration: components saved
+        /// before this existed have no value for it and deserialise to this one, so the next
+        /// upload of an existing avatar gets it without anybody opening the inspector.
+        ///
+        /// It hides and nothing more. The meshes it switches off are exactly as readable in the
+        /// uploaded file as they were - the upload report says so every time.
+        /// </summary>
+        [Tooltip("Keep every renderer this tool could not protect switched off until the right " +
+                 "password has been entered, so a locked avatar shows nothing at all rather than " +
+                 "whatever was left over - a body on an unsupported shader, accessories, particle " +
+                 "effects. This only HIDES them: their meshes still ship readable. Turn it off " +
+                 "if you want something to stay visible on a locked avatar.")]
+        public bool hideUnprotectedWhileLocked = true;
+
         [Tooltip("Renderers to protect. Leave empty to protect every renderer under this object " +
                  "that uses a lilToon material.")]
         public List<Renderer> targetRenderers = new List<Renderer>();

@@ -77,7 +77,26 @@ namespace MeshProtect
         /// </summary>
         public static bool CanGenerate(GameObject avatar, MeshProtectRoot settings, out string why)
         {
+            bool can = CanGenerate(avatar, settings, out why, out string caution);
+            if (caution != null) Debug.LogWarning("[MeshProtect] " + caution);
+            return can;
+        }
+
+        /// <summary>
+        /// The same question, handing back what it has to SAY as well as what it decides.
+        ///
+        /// <paramref name="caution"/> is the over-budget notice. It used to go straight to the
+        /// Console from in here, which is the one place the author of an avatar that will not
+        /// unlock is least likely to find it: the SDK panel is modal while this runs, and
+        /// last-upload.txt - the file they are asked to send - never had it. A report of "I
+        /// entered the password and the avatar does not appear" could not be told apart from an
+        /// over-budget upload by anything they could send. The build now puts it in the report.
+        /// </summary>
+        public static bool CanGenerate(GameObject avatar, MeshProtectRoot settings, out string why,
+                                       out string caution)
+        {
             why = null;
+            caution = null;
 
             var descriptor = avatar.GetComponent<VRCAvatarDescriptor>();
             if (descriptor == null)
@@ -175,8 +194,8 @@ namespace MeshProtect
             if (floor > VRCExpressionParameters.MAX_PARAMETER_COST)
             {
                 int over = floor - VRCExpressionParameters.MAX_PARAMETER_COST;
-                Debug.LogWarning(
-                    "[MeshProtect] EXPRESSION PARAMETERS ARE OVER BUDGET and the protection is " +
+                caution =
+                    "EXPRESSION PARAMETERS ARE OVER BUDGET and the protection is " +
                     $"being applied anyway. This avatar looks like it lands at about {floor} of " +
                     $"{VRCExpressionParameters.MAX_PARAMETER_COST} bits with the password's " +
                     $"{needed} included - about {over} over. " +
@@ -191,7 +210,7 @@ namespace MeshProtect
                     $" To make room, free about {over} bits of synced parameters that NO menu " +
                     "control drives - one synced Int or Float is 8 bits, one synced Bool is 1. " +
                     "Deleting menu-driven ones changes little: with a compressor those were " +
-                    "already being taken care of.");
+                    "already being taken care of.";
             }
 
             return true;
@@ -333,6 +352,16 @@ namespace MeshProtect
 
         public static void Generate(GameObject avatar, MeshProtectRoot settings,
                                     IList<Renderer> renderers, string folder)
+            => Generate(avatar, settings, renderers, folder, null);
+
+        /// <summary>
+        /// <paramref name="lockGate"/> is every renderer that would still draw on a locked avatar
+        /// and can be switched by an animation - see AddGateLayer. Null or empty adds no layer,
+        /// which is what every build did before the gate existed.
+        /// </summary>
+        public static void Generate(GameObject avatar, MeshProtectRoot settings,
+                                    IList<Renderer> renderers, string folder,
+                                    IList<Renderer> lockGate)
         {
             var descriptor = avatar.GetComponent<VRCAvatarDescriptor>();
             if (descriptor == null)
@@ -379,6 +408,8 @@ namespace MeshProtect
             rootMenu = AttachSubMenu(rootMenu, keyMenu, variant, folder, settings);
             AddPackLayers(fx, variant, paramNames, folder, writeDefaults);
             AddDecodeLayers(fx, variant, avatar, renderers, folder, writeDefaults);
+            if (lockGate != null && lockGate.Count > 0)
+                AddGateLayer(fx, variant, settings.keyDigits, avatar, lockGate, folder, writeDefaults);
 
             descriptor.expressionParameters = parameters;
             descriptor.expressionsMenu = rootMenu;
@@ -903,6 +934,205 @@ namespace MeshProtect
                     stateMachine = stateMachine
                 });
             }
+        }
+
+        // ------------------------------------------------------------------ lock gate
+
+        /// <summary>
+        /// The name of the lock gate's layer.
+        ///
+        /// Derived from the variant rather than stored in it. Every other layer name is a field
+        /// on the variant, and a new field there would be empty on every component that already
+        /// exists - which is every avatar this has to reach. Seeded, so a re-bake draws the same
+        /// word, and drawn from the same pattern-free pool so it says nothing about what the
+        /// layer is for. The obfuscator reserves it like the other unlock layers, because the
+        /// validator finds the layer by exactly this string.
+        /// </summary>
+        internal static string GateLayerName(MeshProtectVariant variant)
+        {
+            const string consonants = "bcdfghjklmnprstvwz";
+            const string vowels = "aeiou";
+
+            var taken = new HashSet<string>(
+                (variant.packLayerNames ?? new string[0])
+                    .Concat(variant.decodeLayerNames ?? new string[0])
+                    .Concat(variant.padLayerNames ?? new string[0])
+                    .Where(n => !string.IsNullOrEmpty(n)));
+
+            var rng = new System.Random(unchecked(variant.macSalt * 486187739 + 0x6a7e));
+            for (int attempt = 0; attempt < 64; attempt++)
+            {
+                var chars = new char[8];
+                for (int i = 0; i < chars.Length; i++)
+                    chars[i] = i % 2 == 0 ? consonants[rng.Next(consonants.Length)]
+                                          : vowels[rng.Next(vowels.Length)];
+                string word = new string(chars);
+                if (!taken.Contains(word)) return word;
+            }
+            return "g" + unchecked((uint)variant.macSalt).ToString("x8");
+        }
+
+        /// <summary>
+        /// One layer that keeps everything the decode cannot hide switched off until the
+        /// password is in.
+        ///
+        /// WHAT IT ANSWERS. The lock is the decode collapsing a mesh, so it only reaches what
+        /// wears the decode. Whatever does not - a body on a shader this tool cannot carry, a
+        /// renderer left alone over a material swap, an accessory, particles - went on drawing,
+        /// and a locked avatar showed its leftovers: head and clothes gone, body standing there.
+        /// This switches those renderers off at the Renderer component, which needs nothing from
+        /// their shader.
+        ///
+        /// WHEN IT OPENS, which is the part with a decision in it. An animator cannot check a
+        /// password: any test it could run would be the password, written into a file that ships.
+        /// So this does not ask whether the digits are RIGHT, only whether they have the right
+        /// SHAPE - every position the password uses holds something, every position it leaves
+        /// out is still untouched. That is enough for the two moments that matter:
+        ///
+        ///   - nothing entered yet, the state everyone meets a locked avatar in: closed.
+        ///   - part-way through typing: closed, until the last position goes in - at which point
+        ///     the protected half appears in the same breath if the digits are right.
+        ///
+        /// A complete WRONG password does open it, and the unprotected half then shows on its own
+        /// until the digit is corrected. Closing that too would take the answer.
+        ///
+        /// WHAT IT COSTS. The conditions say how MANY digits the password has, to anybody who
+        /// opens the controller - not which. For six digits, the default, that is what they
+        /// would have assumed. For a shorter one it saves a guesser about an eighth of the work:
+        /// all the shorter lengths together are a seventh the size of the next one up, so
+        /// somebody who starts short and works up loses almost nothing by not being told. The
+        /// menu still shows six dials whatever the length is.
+        ///
+        /// SHAPE. A chain rather than one transition, because "every used position holds
+        /// something" is an AND of ORs - a position holds something when any of its four bits is
+        /// set - and a transition's conditions are a plain AND. Written out flat that is four to
+        /// the sixth transitions. So one state per position: state k means positions before k
+        /// look right, each step forward tests one position, and any later state falls back to
+        /// the start when a position behind it stops looking right. Six frames to climb, once.
+        ///
+        /// THE DEFAULT IS OFF, in the scene as well as in the layer. A viewer whose safety
+        /// settings stop this controller running never sees the digits arrive, so the protected
+        /// half stays collapsed for them - and with these renderers shipped enabled they would
+        /// get exactly the leftovers this layer exists to hide. Every state writes the flag, so
+        /// nothing depends on the shipped value once the layer is running, under either Write
+        /// Defaults setting.
+        /// </summary>
+        private static void AddGateLayer(AnimatorController fx, MeshProtectVariant variant,
+                                         int[] keyDigits, GameObject avatar,
+                                         IList<Renderer> gated, string folder, bool writeDefaults)
+        {
+            string layerName = GateLayerName(variant);
+            RemoveExistingLayer(fx, layerName);
+
+            foreach (var bit in variant.bitNames)
+                if (!fx.parameters.Any(p => p.name == bit))
+                    fx.AddParameter(bit, AnimatorControllerParameterType.Bool);
+
+            var closedClip = BuildGateClip($"{folder}/{layerName}0.anim", avatar, gated, false);
+            var openClip = BuildGateClip($"{folder}/{layerName}1.anim", avatar, gated, true);
+
+            var stateMachine = new AnimatorStateMachine
+            {
+                name = layerName,
+                hideFlags = HideFlags.HideInHierarchy
+            };
+            AssetDatabase.AddObjectToAsset(stateMachine, fx);
+
+            int positions = MeshProtectRoot.PasswordLength;
+            int typed = MeshProtectRoot.TypedLength(keyDigits);
+
+            // steps[k]: positions 0..k-1 have the right shape. The last one is the open state.
+            var steps = new AnimatorState[positions + 1];
+            for (int k = 0; k <= positions; k++)
+            {
+                var state = stateMachine.AddState(k == positions ? "Open" : "Closed " + k);
+                state.motion = k == positions ? openClip : closedClip;
+                state.writeDefaultValues = writeDefaults;
+                steps[k] = state;
+            }
+            stateMachine.defaultState = steps[0];
+
+            for (int k = 0; k < positions; k++)
+            {
+                var bits = BitsOf(variant, k);
+                bool used = k < typed;
+
+                // Forward. A used position has the right shape when any bit is set; one the
+                // password leaves out, when none is.
+                if (used)
+                {
+                    foreach (var bit in bits)
+                        Instant(steps[k].AddTransition(steps[k + 1]))
+                            .AddCondition(AnimatorConditionMode.If, 0f, bit);
+                }
+                else
+                {
+                    var forward = Instant(steps[k].AddTransition(steps[k + 1]));
+                    foreach (var bit in bits)
+                        forward.AddCondition(AnimatorConditionMode.IfNot, 0f, bit);
+                }
+
+                // Back, from every state that took this position on trust. Resetting the avatar's
+                // saved parameters is the ordinary way to get here.
+                for (int later = k + 1; later <= positions; later++)
+                {
+                    if (used)
+                    {
+                        var back = Instant(steps[later].AddTransition(steps[0]));
+                        foreach (var bit in bits)
+                            back.AddCondition(AnimatorConditionMode.IfNot, 0f, bit);
+                    }
+                    else
+                    {
+                        foreach (var bit in bits)
+                            Instant(steps[later].AddTransition(steps[0]))
+                                .AddCondition(AnimatorConditionMode.If, 0f, bit);
+                    }
+                }
+            }
+
+            fx.AddLayer(new AnimatorControllerLayer
+            {
+                name = layerName,
+                defaultWeight = 1f,
+                stateMachine = stateMachine
+            });
+
+            foreach (var renderer in gated)
+                if (renderer != null) renderer.enabled = false;
+        }
+
+        private static AnimatorStateTransition Instant(AnimatorStateTransition transition)
+        {
+            transition.hasExitTime = false;
+            transition.hasFixedDuration = true;
+            transition.duration = 0f;
+            transition.offset = 0f;
+            transition.canTransitionToSelf = false;
+            return transition;
+        }
+
+        /// <summary>The Renderer component's own enabled flag, one curve per gated renderer.</summary>
+        internal const string RendererEnabledProperty = "m_Enabled";
+
+        private static AnimationClip BuildGateClip(string path, GameObject avatar,
+                                                   IList<Renderer> gated, bool visible)
+        {
+            var clip = new AnimationClip { name = System.IO.Path.GetFileNameWithoutExtension(path) };
+            float value = visible ? 1f : 0f;
+
+            foreach (var renderer in gated)
+            {
+                if (renderer == null) continue;
+                var binding = EditorCurveBinding.FloatCurve(
+                    AnimationUtility.CalculateTransformPath(renderer.transform, avatar.transform),
+                    renderer.GetType(), RendererEnabledProperty);
+                AnimationUtility.SetEditorCurve(clip, binding,
+                    new AnimationCurve(new Keyframe(0f, value), new Keyframe(1f / 60f, value)));
+            }
+
+            AssetDatabase.CreateAsset(clip, path);
+            return clip;
         }
 
         /// <summary>

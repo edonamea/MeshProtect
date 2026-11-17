@@ -65,6 +65,18 @@ namespace MeshProtect
             public int unprotectedSubMeshRenderers;
 
             /// <summary>
+            /// Renderers the lock gate keeps switched off until the password is entered: whatever
+            /// would otherwise have gone on drawing on a locked avatar. Hidden, not protected.
+            /// </summary>
+            public int hiddenWhileLocked;
+
+            /// <summary>
+            /// Renderers that DO draw on a locked avatar: everything unprotected when the gate is
+            /// off, and with it on, the few an animation cannot be made to switch.
+            /// </summary>
+            public int visibleWhileLocked;
+
+            /// <summary>
             /// Was not protecting the RIGHT answer, rather than a failure to reach one?
             ///
             /// Only the Quest build sets this. Everything else that ends with nothing protected -
@@ -292,7 +304,15 @@ namespace MeshProtect
             // Asked here, the avatar is still untouched when the build stops, so nothing has to be
             // undone and the message can be about the budget rather than about a failed bake.
 #if LILMP_VRCSDK3_AVATARS
-            if (!MeshProtectAnimator.CanGenerate(avatar, settings, out string chainWhy))
+            bool chainPossible = MeshProtectAnimator.CanGenerate(avatar, settings, out string chainWhy,
+                                                                 out string chainCaution);
+
+            // Into the report, so it is in the Console once and in last-upload.txt too. An avatar
+            // whose password bits did not fit is one that will not unlock, and "I entered the
+            // password and nothing appears" is the report that comes back from it.
+            if (chainCaution != null) report.warnings.Add(chainCaution);
+
+            if (!chainPossible)
             {
                 report.warnings.Add(
                     $"The unlock chain cannot be built on this avatar, so nothing was protected: " +
@@ -358,7 +378,7 @@ namespace MeshProtect
                 {
                     report.warnings.Add(
                         $"Renderer '{renderer.name}' has no protectable material, mesh left " +
-                        "untouched. It will be visible while the avatar is locked.");
+                        "untouched.");
                     report.skippedRenderers++;
                     continue;
                 }
@@ -366,7 +386,7 @@ namespace MeshProtect
                 candidates.Add((renderer, newMaterials, protectedSubMesh));
             }
 
-            DropRenderersThatCannotBeProtected(candidates, variant, report);
+            DropRenderersThatCannotBeProtected(avatar, candidates, variant, report);
 #if LILMP_VRCSDK3_AVATARS
             DropRenderersWithUnsafeMaterialSwaps(avatar, settings, candidates,
                                                 materialCache, variant, mac, folder, report);
@@ -483,7 +503,12 @@ namespace MeshProtect
             report.appliedProtection = true;
 
 #if LILMP_VRCSDK3_AVATARS
-            MeshProtectAnimator.Generate(avatar, settings, protectedRenderers, folder);
+            // Decided here, with every slot holding its final material and before the FX copy
+            // exists: the survey of what already animates a renderer's enabled flag has to read
+            // the avatar's own controllers, not one carrying layers this build added.
+            var lockGate = CollectLockGate(avatar, settings, variant, report);
+
+            MeshProtectAnimator.Generate(avatar, settings, protectedRenderers, folder, lockGate);
 
             // After Generate, so the unlock layers exist and can be left alone by name.
             if (settings.obfuscateAnimatorNames)
@@ -748,11 +773,168 @@ namespace MeshProtect
                 if (!rejected.TryGetValue(renderer, out string reason)) continue;
                 report.warnings.Add(
                     $"Renderer '{renderer.name}' was left UNPROTECTED and unchanged because {reason}. " +
-                    "Its material animations remain usable, and it stays visible while locked. " +
+                    "Its material animations remain usable. " +
                     "Use supported materials in ordinary FX states to protect this renderer.");
                 report.skippedRenderers++;
                 candidates.RemoveAt(i);
             }
+        }
+
+        // ------------------------------------------------------------------ lock gate
+
+        /// <summary>
+        /// Every renderer that would still draw on a locked avatar, sorted into the ones an
+        /// animation can keep switched off and the ones it cannot.
+        ///
+        /// "Would still draw" is asked of the avatar as it now stands, after conversion: a mesh
+        /// renderer with any slot that is not wearing the decode, and every other kind of
+        /// renderer there is - particles, trails, lines - none of which this tool protects at
+        /// all. A renderer that is already switched off is left out; it shows nothing, and if
+        /// something turns it on, that something is an animation and the next rule applies.
+        ///
+        /// Two kinds cannot be gated, and both are left exactly as they are and named:
+        ///
+        ///   - one whose enabled flag an animation on this avatar already drives. The gate
+        ///     writes that flag in every state, from the last layer of the FX controller, so it
+        ///     would simply win - and a toggle that stops working is a worse trade than a part
+        ///     that shows early.
+        ///   - one that an animation path cannot single out, because an earlier sibling has the
+        ///     same name. The curve would bind to the sibling, and this renderer - shipped
+        ///     switched off - would never come back on.
+        ///
+        /// With the option off this still runs, so the report can say what will show.
+        /// </summary>
+        private static List<Renderer> CollectLockGate(GameObject avatar, MeshProtectRoot settings,
+                                                      MeshProtectVariant variant, Report report)
+        {
+            var gate = new List<Renderer>();
+            var showing = new List<string>();
+            var animated = RenderersWithAnimatedEnable(avatar);
+
+            foreach (var renderer in avatar.GetComponentsInChildren<Renderer>(true))
+            {
+                if (renderer == null || !renderer.enabled) continue;
+                if (!DrawsWhileLocked(renderer, settings, variant)) continue;
+
+                if (!settings.hideUnprotectedWhileLocked)
+                {
+                    showing.Add($"'{renderer.name}'");
+                    continue;
+                }
+
+                string path = AnimationUtility.CalculateTransformPath(renderer.transform,
+                                                                      avatar.transform);
+                var reached = string.IsNullOrEmpty(path) ? avatar.transform
+                                                         : avatar.transform.Find(path);
+                if (animated.Contains(renderer))
+                    showing.Add($"'{renderer.name}' (an animation on this avatar already " +
+                                "switches this renderer on and off)");
+                else if (reached != renderer.transform)
+                    showing.Add($"'{renderer.name}' (another object at '{path}' has the same " +
+                                "name, so an animation cannot single this one out)");
+                else
+                    gate.Add(renderer);
+            }
+
+            report.hiddenWhileLocked = gate.Count;
+            report.visibleWhileLocked = showing.Count;
+
+            if (gate.Count > 0)
+                report.warnings.Add(
+                    $"{gate.Count} renderer(s) this build could not protect are kept switched off " +
+                    "until the password is entered, so the locked avatar shows nothing: " +
+                    string.Join(", ", gate.Take(8).Select(r => $"'{r.name}'")) +
+                    (gate.Count > 8 ? ", ..." : "") +
+                    ". They are HIDDEN, NOT PROTECTED - their meshes ship readable; the notes " +
+                    "here say why each could not be protected. ('Hide unprotected parts while " +
+                    "locked', under Advanced on the component, turns the hiding off.)");
+
+            if (showing.Count > 0)
+                report.warnings.Add(
+                    $"{showing.Count} renderer(s) are not protected and stay VISIBLE while the " +
+                    "avatar is locked" +
+                    (settings.hideUnprotectedWhileLocked
+                        ? ", because they could not be switched off safely: "
+                        : ", because 'Hide unprotected parts while locked' is off: ") +
+                    string.Join(", ", showing.Take(8)) + (showing.Count > 8 ? ", ..." : "") + ".");
+
+            return gate;
+        }
+
+        /// <summary>
+        /// Does this renderer put anything on screen while the avatar is locked?
+        ///
+        /// A slot wearing the decode does not: its mesh is collapsed. A material the author has
+        /// vouched draws nothing does not either. Everything else does, and so does every
+        /// renderer that is not a mesh at all.
+        /// </summary>
+        private static bool DrawsWhileLocked(Renderer renderer, MeshProtectRoot settings,
+                                             MeshProtectVariant variant)
+        {
+            bool isMesh = renderer is SkinnedMeshRenderer || renderer is MeshRenderer;
+            if (isMesh && GetMesh(renderer) == null) return false;
+
+            foreach (var material in renderer.sharedMaterials)
+            {
+                if (material == null) continue;
+                if (settings.invisibleMaterials.Contains(material)) continue;
+                if (isMesh && IsProtectShader(material, variant.shaderName)) continue;
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Renderers whose enabled flag some animation on this avatar already writes: the
+        /// playable layers, the special layers, and any Animator or Animation further down,
+        /// each read against the object its paths are relative to.
+        /// </summary>
+        private static HashSet<Renderer> RenderersWithAnimatedEnable(GameObject avatar)
+        {
+            var found = new HashSet<Renderer>();
+            var sources = new List<(Transform root, AnimationClip[] clips)>();
+
+            var descriptor = avatar.GetComponent<VRC.SDK3.Avatars.Components.VRCAvatarDescriptor>();
+            if (descriptor != null)
+            {
+                var layers = new List<VRC.SDK3.Avatars.Components.VRCAvatarDescriptor.CustomAnimLayer>();
+                if (descriptor.baseAnimationLayers != null) layers.AddRange(descriptor.baseAnimationLayers);
+                if (descriptor.specialAnimationLayers != null) layers.AddRange(descriptor.specialAnimationLayers);
+                foreach (var layer in layers)
+                    if (!layer.isDefault && layer.animatorController != null)
+                        sources.Add((avatar.transform, layer.animatorController.animationClips));
+            }
+
+            foreach (var animator in avatar.GetComponentsInChildren<Animator>(true))
+            {
+                if (animator.runtimeAnimatorController == null) continue;
+                sources.Add((animator.transform, animator.runtimeAnimatorController.animationClips));
+            }
+
+            foreach (var animation in avatar.GetComponentsInChildren<Animation>(true))
+            {
+                var clips = new List<AnimationClip> { animation.clip };
+                foreach (AnimationState state in animation) clips.Add(state.clip);
+                sources.Add((animation.transform, clips.ToArray()));
+            }
+
+            foreach (var (root, clips) in sources)
+            {
+                if (clips == null) continue;
+                foreach (var clip in clips.Where(c => c != null).Distinct())
+                foreach (var binding in AnimationUtility.GetCurveBindings(clip))
+                {
+                    if (binding.propertyName != MeshProtectAnimator.RendererEnabledProperty ||
+                        binding.type == null || !typeof(Renderer).IsAssignableFrom(binding.type))
+                        continue;
+
+                    var target = string.IsNullOrEmpty(binding.path) ? root : root.Find(binding.path);
+                    if (target == null) continue;
+                    if (target.GetComponent(binding.type) is Renderer renderer) found.Add(renderer);
+                }
+            }
+
+            return found;
         }
 
         private static AnimationClip[] SyncedOverrideClips(
@@ -1524,6 +1706,7 @@ namespace MeshProtect
         /// upload their avatar. They are reasons that one mesh is not protected.
         /// </summary>
         private static void DropRenderersThatCannotBeProtected(
+            GameObject avatar,
             List<(Renderer renderer, Material[] materials, bool[] protectedSubMesh)> candidates,
             MeshProtectVariant variant, Report report)
         {
@@ -1534,6 +1717,24 @@ namespace MeshProtect
 
                 if (!MeshProtectMesh.CanProtect(GetMesh(renderer), out string meshWhy))
                     why = meshWhy;
+
+                // The digits reach a renderer through an animation, and an animation addresses it
+                // by path. Two siblings with one name have one path, and the curve binds to the
+                // first of them: the second would be displaced like any other and then never
+                // receive a digit, so it would stay collapsed with the right password, for
+                // everybody, with nothing in the build to say why. Leaving it unprotected is the
+                // lesser loss, and renaming one of the two is all it takes to get it back.
+                if (why == null && avatar != null)
+                {
+                    string path = AnimationUtility.CalculateTransformPath(renderer.transform,
+                                                                          avatar.transform);
+                    var reached = string.IsNullOrEmpty(path) ? avatar.transform
+                                                             : avatar.transform.Find(path);
+                    if (reached != renderer.transform)
+                        why = $"another object at '{path}' has the same name, so the unlock " +
+                              "animation cannot single this renderer out and it could never be " +
+                              "decoded - rename one of the two to protect it";
+                }
 
                 // The ID Mask has to be judged for the whole renderer, not per material. UV6 is
                 // written for every vertex of the mesh, so leaving one material out does not save
@@ -1566,15 +1767,13 @@ namespace MeshProtect
 
                 if (why == null) continue;
 
-                // "Visible while locked" is the part an author does not work out for themselves.
                 // The lock is a vertex shader effect - the decode collapses every vertex to a point
-                // when the key is wrong - so it only reaches materials wearing that shader. Anything
-                // skipped here renders normally on a locked avatar, which looks like a bug to
-                // whoever is standing next to it and is the first thing they will report.
+                // when the key is wrong - so it only reaches materials wearing that shader, and
+                // anything skipped here would render normally on a locked avatar. That used to be
+                // said in this message and left at that; it is the lock gate's business now, which
+                // keeps such a renderer switched off instead and reports the ones it cannot.
                 report.warnings.Add(
-                    $"'{renderer.name}' was left exactly as it is, unprotected: {why}. It will " +
-                    "also be VISIBLE while the avatar is locked - hiding is done by the protection " +
-                    "shader, so it only hides what it protects.");
+                    $"'{renderer.name}' was left exactly as it is, unprotected: {why}.");
                 report.skippedRenderers++;
                 candidates.RemoveAt(i);
             }
@@ -1653,8 +1852,7 @@ namespace MeshProtect
                 if (mesh == null || !elsewhere.TryGetValue(mesh, out var where)) continue;
 
                 report.warnings.Add(
-                    $"'{mesh.name}' on '{candidates[i].renderer.name}' was left unprotected, and " +
-                    "will be visible while the avatar is locked: the " +
+                    $"'{mesh.name}' on '{candidates[i].renderer.name}' was left unprotected: the " +
                     $"avatar still points at it from {string.Join(", ", where.Distinct().Take(3))}" +
                     $"{(where.Distinct().Count() > 3 ? ", ..." : "")}, and that reference would " +
                     "carry the undisplaced mesh into the bundle whatever this build did to the " +
@@ -2335,15 +2533,16 @@ namespace MeshProtect
                     ? (staleWiring
                         ? $"'{source.name}' is on a tessellating variant of '{host.family}', " +
                           "and this avatar's merged family was built by a version that could " +
-                          "not yet protect tessellation. That sub-mesh ships UNPROTECTED and " +
-                          "intact, and stays VISIBLE while the avatar is locked. Press " +
+                          "not yet protect this kind of tessellation (lilSSRT 1.4 changed how " +
+                          "its own is put together). That sub-mesh ships UNPROTECTED and " +
+                          "intact. Press " +
                           "'Rebuild Shader', under 'Advanced' on the Mesh Protect Root " +
                           "component, then upload again - the rebuilt family protects it."
                         : $"'{source.name}' is on a tessellating variant of '{host.family}' " +
                           "whose container could not be wired for the decode - see the Console " +
                           "line from the rebuild for the reason. That sub-mesh ships " +
-                          "UNPROTECTED and intact, and stays VISIBLE while the avatar is " +
-                          "locked; if any other material on the same renderer did convert, " +
+                          "UNPROTECTED and intact; if any other material on the same renderer " +
+                          "did convert, " +
                           "this renderer ends up part protected and part not. To protect it, " +
                           $"{offSwitch}, then upload again.")
                     : $"'{source.name}' could not be moved onto the merged '{host.family}' family - " +
@@ -2382,8 +2581,7 @@ namespace MeshProtect
                 report.warnings.Add(
                     $"Material '{source.name}' uses '{source.shader.name}' and was left " +
                     $"unprotected: {why}. Its vertices are left where they are, so nothing is " +
-                    "broken - that sub-mesh simply ships readable, and it stays visible while the " +
-                    "avatar is locked.");
+                    "broken - that sub-mesh simply ships readable.");
                 return null;
             }
 

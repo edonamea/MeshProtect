@@ -38,9 +38,10 @@ namespace MeshProtect
             // after it stays as the safety net for any field added later and not yet listed.
             "distortRatio", "mode", "recalculateMissingTangents", "attenuateAtJoints",
             "rigidityExponent", "obfuscateAnimatorNames", "targetRenderers", "ignoredMaterials",
-            "invisibleMaterials", "outputFolder",
+            "invisibleMaterials", "outputFolder", "hideUnprotectedWhileLocked",
         };
         private static bool showAdvanced;
+        private static bool showMenu;
 
         /// <summary>What is in the text field right now, which is not yet what is committed.</summary>
         private string draft;
@@ -151,29 +152,91 @@ namespace MeshProtect
             EditorGUILayout.HelpBox(MeshProtectL10n.Tr("autofix"), MessageType.Info);
         }
 
+        /// <summary>
+        /// Where the unlock entry goes in the wearer's menu: folded shut, with the answer on show.
+        ///
+        /// These three fields sat open between the password and everything else, and that put
+        /// "Parent menu path" and "Insert position" in front of somebody whose whole task was
+        /// "set a password, upload". The message that came back was exactly that: what is a
+        /// parent menu path, and is it all right to leave the position at 0? It is - both are
+        /// for an author who wants the entry somewhere other than the end of the root menu, and
+        /// nobody else needs to look at them. So the fields are behind a fold that says optional,
+        /// and what stays visible is the one line a first-time author does want: where to find
+        /// the entry in game.
+        /// </summary>
         private void DrawMenuBox()
         {
             serializedObject.Update();
             using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
-                EditorGUILayout.LabelField(MeshProtectL10n.Tr("menu.title"), EditorStyles.boldLabel);
                 var menuName = serializedObject.FindProperty("unlockMenuName");
                 var menuPath = serializedObject.FindProperty("unlockMenuPath");
                 var position = serializedObject.FindProperty("unlockMenuPosition");
-                EditorGUILayout.PropertyField(menuName, MeshProtectL10n.TrC("menu.name", "menu.name.tip"));
-                EditorGUILayout.PropertyField(menuPath, MeshProtectL10n.TrC("menu.path", "menu.path.tip"));
-                position.intValue = Mathf.Clamp(EditorGUILayout.IntField(
-                    MeshProtectL10n.TrC("menu.position", "menu.position.tip"), position.intValue), 0, 8);
 
-                string label = string.IsNullOrWhiteSpace(menuName.stringValue)
-                    ? "Unlock" : menuName.stringValue.Trim();
-                var parents = MeshProtectMenuPath.Parse(menuPath.stringValue);
-                string route = string.Join(" → ", new[] { "Expressions" }.Concat(parents).Concat(new[] { label }));
-                EditorGUILayout.LabelField(MeshProtectL10n.Tr("menu.preview", route),
+                EditorGUILayout.LabelField(
+                    MeshProtectL10n.Tr("menu.preview", UnlockRoute(menuName.stringValue, menuPath.stringValue)),
                     EditorStyles.wordWrappedMiniLabel);
-                EditorGUILayout.HelpBox(MeshProtectL10n.Tr("menu.help"), MessageType.Info);
+
+                showMenu = EditorGUILayout.Foldout(showMenu, MeshProtectL10n.Tr("menu.title"), true);
+                if (showMenu)
+                {
+                    EditorGUILayout.LabelField(MeshProtectL10n.Tr("menu.optional"),
+                        EditorStyles.wordWrappedMiniLabel);
+                    EditorGUILayout.PropertyField(menuName, MeshProtectL10n.TrC("menu.name", "menu.name.tip"));
+                    EditorGUILayout.PropertyField(menuPath, MeshProtectL10n.TrC("menu.path", "menu.path.tip"));
+                    position.intValue = Mathf.Clamp(EditorGUILayout.IntField(
+                        MeshProtectL10n.TrC("menu.position", "menu.position.tip"), position.intValue), 0, 8);
+                    EditorGUILayout.HelpBox(MeshProtectL10n.Tr("menu.help"), MessageType.Info);
+                }
             }
             serializedObject.ApplyModifiedProperties();
+        }
+
+        /// <summary>"Expressions → Settings → Unlock": the taps that reach the unlock entry.</summary>
+        private static string UnlockRoute(string menuName, string menuPath)
+        {
+            string label = string.IsNullOrWhiteSpace(menuName) ? "Unlock" : menuName.Trim();
+            var parents = MeshProtectMenuPath.Parse(menuPath);
+            return string.Join(" → ", new[] { "Expressions" }.Concat(parents).Concat(new[] { label }));
+        }
+
+        /// <summary>
+        /// The password on screen, written out as the taps that enter it.
+        ///
+        /// "Pick one digit per position" is a complete instruction to somebody who already knows
+        /// what the menu looks like, and no instruction at all to somebody who does not. In game
+        /// the unlock entry opens onto six entries numbered 1 to 6, each holding buttons 1 to 8,
+        /// and nothing says the first number is a POSITION and the second a DIGIT. An author
+        /// wrote in that they had "put the generated password into all of the items" and the
+        /// avatar still did not appear. Read literally that is the whole password tapped inside
+        /// entry 1, then again inside entry 2 - which leaves every position on the password's
+        /// last digit. Whether or not that is what happened, nothing they had been shown ruled
+        /// it out.
+        ///
+        /// So this spells out their own password, entry by entry. It also says the two things
+        /// the menu itself cannot: a tapped digit shows no selection, and a short password's
+        /// spare entries must be left alone.
+        /// </summary>
+        private static void DrawEntrySteps(MeshProtectRoot settings)
+        {
+            int typed = MeshProtectRoot.TypedLength(settings.keyDigits);
+            if (typed == 0) return;
+
+            var text = new System.Text.StringBuilder();
+            text.Append(MeshProtectL10n.Tr("password.steps.intro",
+                UnlockRoute(settings.unlockMenuName, settings.unlockMenuPath)));
+
+            for (int i = 0; i < typed; i++)
+                text.Append('\n').Append(
+                    MeshProtectL10n.Tr("password.steps.item", i + 1, settings.keyDigits[i]));
+
+            if (typed < MeshProtectRoot.PasswordLength)
+                text.Append('\n').Append(MeshProtectL10n.Tr("password.steps.untouched",
+                    string.Join(", ", Enumerable.Range(typed + 1, MeshProtectRoot.PasswordLength - typed)),
+                    typed));
+
+            text.Append('\n').Append(MeshProtectL10n.Tr("password.steps.outro"));
+            EditorGUILayout.HelpBox(text.ToString(), MessageType.Info);
         }
 
 #if LILMP_VRCSDK3_AVATARS
@@ -619,15 +682,25 @@ namespace MeshProtect
                 EditorGUILayout.LabelField(MeshProtectL10n.Tr("password.help"),
                     EditorStyles.wordWrappedMiniLabel);
 
+                if (draftError == null) DrawEntrySteps(settings);
+
                 EditorGUILayout.Space(4);
 
                 // The same four characters the upload prints. Comparing them is how an author
                 // checks that the avatar being built is keyed to the password in front of them,
                 // without the digits themselves going into a log people paste into help threads.
+                string check = MeshProtectCipher.CheckCode(settings.keyDigits, settings.variant);
                 EditorGUILayout.LabelField(
-                    MeshProtectL10n.Tr("password.check"),
-                    MeshProtectCipher.CheckCode(settings.keyDigits, settings.variant),
-                    EditorStyles.miniLabel);
+                    MeshProtectL10n.Tr("password.check"), check, EditorStyles.miniLabel);
+
+                // The field above is live, and the avatar already in VRChat is not. If what the
+                // last build was keyed to is not what is on screen now, the digits on screen do
+                // not open the avatar in game - and from in game that looks like the tool not
+                // working at all.
+                string built = MeshProtectBuildMemory.Recall(settings.variant);
+                if (built != null && built != check)
+                    EditorGUILayout.HelpBox(MeshProtectL10n.Tr("password.changed", built, check),
+                                            MessageType.Warning);
 
                 EditorGUILayout.LabelField(MeshProtectL10n.Tr("password.id"), settings.variant.shaderName,
                                            EditorStyles.miniLabel);
@@ -685,6 +758,7 @@ namespace MeshProtect
             Field("targetRenderers", "field.targets", "field.targets.tip");
             Field("ignoredMaterials", "field.ignored", "field.ignored.tip");
             Field("invisibleMaterials", "field.invisible", "field.invisible.tip");
+            Field("hideUnprotectedWhileLocked", "field.hidelocked", "field.hidelocked.tip");
             Field("outputFolder", "field.output", "field.output.tip");
         }
 

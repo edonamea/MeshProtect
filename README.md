@@ -46,7 +46,11 @@ The inspector speaks **日本語 / English / 简体中文 / 한국어**, followi
 2. Press **Generate Password** — six digits, each 1–8, or type your own (one to six digits).
    **Write it down:** VRChat stores it per machine, so a new PC means entering it again
 3. Build & Publish, exactly as you always do
-4. In VRChat: Expressions → **Unlock** → pick one digit per position
+4. In VRChat: Expressions → **Unlock**. You get six entries, **1** to **6**: that number is the
+   *position* of a digit, and the **1–8** inside it is the digit itself. For password `372615`:
+   open **1** and press 3, open **2** and press 7, and so on up to open **6**, press 5. The
+   avatar appears as the last digit goes in. The component shows these steps for your own
+   password
 
 > [!WARNING]
 > The SDK will show a red error saying this component gets removed by the client. That is true,
@@ -69,10 +73,14 @@ nothing to toggle between the two builds.
 |---|---|
 | **lilToon 2.x** | Native, through lilToon's official extension point. Nothing is forked or patched, so a lilToon update cannot break it. |
 | **Poiyomi Toon** · **Xiexe's Toon Shader** · **UnityChanToonShader** · **Sunao Shader** · **GTAvaToon** · **blackbody** | Automatic graft: the decode is copied onto their shader, pass by pass, located by semantic rather than by patching against text. |
-| **lilSSAO** · **lilSSRT** | Merged family: they are lilToon custom shader families, so their folder is copied into the avatar's generated output and the decode is merged in. A copy of the host's shader folder therefore lives in your project alongside the generated family. |
+| **lilSSAO** · **lilSSRT** | Merged family: they are lilToon custom shader families, so their folder is copied into the avatar's generated output and the decode is merged in. A copy of the host's shader folder therefore lives in your project alongside the generated family. Tested up to lilSSRT 1.4.3. |
 
 A material the graft cannot cover in full ships unprotected and named in the Console, rather than
 broken. Anything on a shader outside that list is left exactly as it was — never damaged.
+
+Whatever ends up unprotected is kept switched off until the password is entered, so a locked
+avatar shows nothing at all rather than its leftovers. That is hiding, not protection — those
+meshes still ship readable — and *Hide unprotected parts while locked* (Advanced) turns it off.
 
 ## What it stops
 
@@ -113,7 +121,8 @@ left alone and named in the Console, so a build never quietly ships a broken ava
   names are generated too, so nothing in an uploaded avatar even names this tool.
 - **A locked avatar is invisible, not exploded.** Every vertex collapses to a point, so nothing
   rasterises in any pass. A wrong password collapses too: the avatar is either correct or absent,
-  never scrambled in front of other people.
+  never scrambled in front of other people. Renderers the decode cannot reach are switched off
+  by an FX layer until every digit is in, so nothing is left standing there either.
 - **Integer arithmetic throughout**, so C# and HLSL agree bit for bit on every GPU.
 
 **Overhead:** one UV channel (TEXCOORD6) · 24 bits of expression parameter budget · a handful of

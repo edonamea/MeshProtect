@@ -188,8 +188,39 @@ rest of the avatar is protected. The upload is not stopped:
 - a material on somebody else's lilToon custom family — if that family is another protection tool,
   displacing an already-displaced mesh would destroy the model
 
-Because hiding is a shader effect, anything left unchanged this way still renders while the avatar
-is locked. The Console names every renderer this applies to.
+The lock itself is a shader effect, so on its own it only hides what wears the decode. Everything
+left unchanged this way is instead kept switched off by a layer in the FX controller until the
+password has been entered — see *The lock gate* below. The upload report names every renderer
+this applies to, and says each time that hidden is not protected.
+
+## The lock gate
+
+The decode can only hide what it protects. Whatever it does not protect — the renderers listed
+above, particle systems, anything on Ignored Materials — would go on drawing on a locked avatar,
+which leaves the head and the clothes gone and an unprotected body standing there. *Hide
+unprotected parts while locked* (Advanced, on by default) adds one FX layer that switches those
+renderers off at the Renderer component until the password is in.
+
+**It cannot tell a right password from a wrong one, by design.** An animator that could would
+have the password written into its transition conditions, in a controller that ships with the
+avatar. The layer only tests the *shape* of what has been entered: every position the password
+uses holds a digit, and every position it leaves out is still untouched. So:
+
+- nothing entered: everything is hidden;
+- part-way through typing: still hidden;
+- all digits entered and right: everything appears together;
+- all digits entered and one of them wrong: the protected parts stay hidden and the unprotected
+  ones show, until the digit is corrected.
+
+**What it costs.** The layer's conditions say how *many* digits the password has — not which —
+to anyone who opens the controller. For six digits, the default, that is what they would have
+assumed. For a shorter password it saves a guesser about an eighth of the work.
+
+**What it does not do.** It protects nothing: the meshes it switches off ship exactly as
+readable as before. And two kinds of renderer are left visible, each named in the upload report:
+one whose enabled flag an animation on the avatar already drives (the gate would override that
+toggle), and one that shares its name and path with an earlier sibling (an animation cannot
+single it out).
 
 ## When the build stops
 

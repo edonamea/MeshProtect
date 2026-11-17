@@ -52,8 +52,18 @@ namespace MeshProtect
         /// entries are qualified by their sub-family segment ("GTAO/AOTessellation/Opaque"),
         /// because MergedShaderFor compares root-relative names and an unqualified entry could
         /// never match one - the reviewer's proof used the exact containers lilSSRT ships.
+        /// 3: the override is typed with the control point the host's own vertTess returns
+        /// instead of assuming lilToon's appdataCopy. lilSSRT 1.4 carries the instance id and
+        /// the eye index across the hull in a struct of its own, and against that an
+        /// appdataCopy override only compiles while the two structs happen to have the same
+        /// number of members - which stops being true exactly in the stereo-instanced variants.
+        /// A format 2 record is still honoured where that cannot bite (see TessRecordUsable),
+        /// so this bump costs nobody a working tessellating variant.
         /// </summary>
-        private const int TessFormat = 2;
+        private const int TessFormat = 3;
+
+        /// <summary>The last format whose wiring assumed lilToon's own control point.</summary>
+        private const int TessFormatAssumingAppdataCopy = 2;
 
         /// <summary>The host's own LIL_CUSTOM_PROPERTIES, renamed so ours can chain onto it.</summary>
         private const string HostProperties = "LIL_MPHOST_PROPERTIES";
@@ -95,6 +105,14 @@ namespace MeshProtect
         /// </summary>
         private static readonly Dictionary<string, (string key, string digest)> digests =
             new Dictionary<string, (string, string)>();
+
+        /// <summary>
+        /// Whether a merged folder's host declares a tessellation control point of its own,
+        /// keyed on the folder and remembered against its wiring record's timestamp. Asked once
+        /// per material through TessWiring, and the answer is a scan of the folder's sources.
+        /// </summary>
+        private static readonly Dictionary<string, (long stamp, bool own)> controlPoints =
+            new Dictionary<string, (long, bool)>();
 
         /// <summary>
         /// Every whitelisted host family in the project, found by reading the ShaderName out of
@@ -163,7 +181,7 @@ namespace MeshProtect
             return cache;
         }
 
-        public static void Forget() { cache = null; digests.Clear(); }
+        public static void Forget() { cache = null; digests.Clear(); controlPoints.Clear(); }
 
         /// <summary>The host family a material's shader belongs to, or null.</summary>
         public static Host HostFor(Shader shader)
@@ -351,11 +369,16 @@ namespace MeshProtect
             }
 
             PatchNestedFamilies(variant, host, folder, FamilyName(variant, host));
-            PatchTessellation(variant, folder, FamilyName(variant, host));
+            var tessellation = PatchTessellation(variant, folder, FamilyName(variant, host));
             WriteMerged(variant, host, hostReal, folder, hostCustom);
 
             AssetDatabase.ImportAsset(folder, ImportAssetOptions.ImportRecursive |
                                               ImportAssetOptions.ForceSynchronousImport);
+
+            // After the import, because it compiles: the text checks above cannot see a variant
+            // that only fails once it is built. Before the marker, so a pass this takes out is
+            // already on the deny list by the time anything can ask for it.
+            VerifyTessellation(folder, FamilyName(variant, host), tessellation);
 
             // The marker goes down only once the family is on disk AND compiled, so a partial one
             // is retried rather than remembered as done. Without the count, Rebuild Shader reports
@@ -519,9 +542,13 @@ namespace MeshProtect
         /// define LILMP_TESS_POST in its HLSLINCLUDE (arming the rename), and put the override
         /// where the pass's *LIL_SUBSHADER_INSERT_POST* will paste it - appended to the host's
         /// own Post block where one exists (lilSSRT's AO containers, whose ssrt_tessellation.hlsl
-        /// declares the same pass-through vertTess lilToon's does, and re-defines
-        /// LIL_TESSELLATION_INCLUDED at its top so the guard holds), or in a Post block created
-        /// beside the container where none does (the stock DefaultTessellation ones).
+        /// declares a vertTess of its own and re-defines LIL_TESSELLATION_INCLUDED at its top so
+        /// the guard holds), or in a Post block created beside the container where none does
+        /// (the stock DefaultTessellation ones).
+        ///
+        /// The override is typed per container, with whatever the vertTess it stands in front of
+        /// returns. That used to be assumed to be lilToon's appdataCopy, and for lilSSRT it was
+        /// true until 1.4 - see WireTessContainer for what the assumption cost.
         ///
         /// What tessellates is decided by evidence, not by name: a container is tessellating
         /// when a subshader block it references is named *Tessellation* or, for a block file
@@ -537,13 +564,11 @@ namespace MeshProtect
         /// Everything here happens before the single ImportAsset in EnsureMerged, so wiring
         /// costs no extra import and no extra compile.
         /// </summary>
-        private static void PatchTessellation(MeshProtectVariant variant, string folder,
-                                              string mergedFamily)
+        private static TessOutcome PatchTessellation(MeshProtectVariant variant, string folder,
+                                                     string mergedFamily)
         {
-            string tessText = MeshProtectShaderGen.EmitTessHlsl(variant);
             var appended = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var failedPasses = new List<string>();
-            bool denyAll = false;
+            var outcome = new TessOutcome();
 
             foreach (string path in Directory.GetFiles(folder, "*.lilcontainer",
                                                        SearchOption.AllDirectories))
@@ -552,20 +577,62 @@ namespace MeshProtect
                 string dir = Path.GetDirectoryName(path);
                 if (!ContainerTessellates(dir, text)) continue;
 
-                string why = WireTessContainer(path, dir, text, tessText, appended);
-                if (why == null) continue;
-
                 // Recorded ROOT-relative - "GTAO/ltspass_aotess_opaque", not the container's own
                 // "ltspass_aotess_opaque" - because MergedShaderFor compares suffixes relative to
                 // the root family (HostFor resolves a sub-family to its parent). An unqualified
                 // entry can never match one, and lilSSRT's AO tessellation lives ENTIRELY in
                 // sub-families. A failure that cannot even be named goes to deny-everything.
                 string suffix = QualifiedSuffix(folder, mergedFamily, path, text);
-                if (suffix == null) denyAll = true; else failedPasses.Add(suffix);
+
+                string why = WireTessContainer(path, dir, text, variant, appended,
+                                               out bool hostOwnTessellation);
+                if (why == null)
+                {
+                    // Only the passes built on the HOST's tessellation go on to be compiled once
+                    // the family is imported. The stock DefaultTessellation ones run the same
+                    // text as this tool's own family, which every release is measured against.
+                    if (hostOwnTessellation && suffix != null)
+                    {
+                        string declared = QuotedLineValue(text, "Shader ") ?? "";
+                        outcome.toVerify.Add((suffix,
+                            (declared.StartsWith("Hidden/", StringComparison.Ordinal) ? "Hidden/" : "") +
+                            mergedFamily + "/" + suffix));
+                    }
+                    continue;
+                }
+
+                if (suffix == null) outcome.denyAll = true; else outcome.failedPasses.Add(suffix);
                 Debug.LogWarning($"[MeshProtect] Tessellating container " +
                                  $"'{Path.GetFileName(path)}' was not wired for the decode: {why}. " +
                                  "Materials on its variants ship unprotected and intact.");
             }
+
+            WriteTessRecord(folder, mergedFamily, outcome);
+            return outcome;
+        }
+
+        /// <summary>What the wiring pass did, kept so the compile check can add to it.</summary>
+        private sealed class TessOutcome
+        {
+            /// <summary>Root-relative suffixes of pass containers that must not be used.</summary>
+            public readonly List<string> failedPasses = new List<string>();
+
+            /// <summary>A failure that could not be named: refuse every tessellating variant.</summary>
+            public bool denyAll;
+
+            /// <summary>Wired passes built on the host's own tessellation: suffix, shader name.</summary>
+            public readonly List<(string suffix, string shader)> toVerify =
+                new List<(string, string)>();
+        }
+
+        /// <summary>
+        /// Write tess.txt from the passes that failed, adding the wrappers that ride on them.
+        /// Called after wiring, and again if the compile check takes more passes out.
+        /// </summary>
+        private static void WriteTessRecord(string folder, string mergedFamily, TessOutcome outcome)
+        {
+            var failedPasses = outcome.failedPasses;
+            bool denyAll = outcome.denyAll;
 
             var denied = new List<string>(failedPasses);
             if (failedPasses.Count > 0)
@@ -599,6 +666,116 @@ namespace MeshProtect
             File.WriteAllText(Path.Combine(folder, TessMarkerFile),
                 "tessgen=" + TessFormat + ";" +
                 (denied.Count == 0 ? "ok" : "deny=" + string.Join(",", denied.Distinct())));
+        }
+
+        /// <summary>
+        /// Compile the wired passes that are built on the host's own tessellation, and take out
+        /// the ones that do not build.
+        ///
+        /// Everything else the wiring relies on is checked in plain text before the import, and
+        /// plain text was not enough: lilToon's importer compiles nothing when it imports, and
+        /// Unity compiles a variant only when something first draws with it. So an override
+        /// that does not fit the host is a shader that imports cleanly, is found, is handed a
+        /// material, has a mesh displaced under it - and then fails in the one variant nobody
+        /// at the author's desk ever draws. That is how lilSSRT 1.4 got through: the plain
+        /// variant was fine and the stereo-instanced one, the only one a VR viewer uses, was
+        /// not.
+        ///
+        /// So both are asked for here, by name, on the pass that carries the override. A pass
+        /// that fails either goes on the deny list exactly as one the text checks refused, and
+        /// conversion then leaves its materials unprotected and intact rather than protected
+        /// and broken for half the room.
+        ///
+        /// Only the vertex stage: the override is a vertex function, and an ill-typed function
+        /// fails the whole translation unit whichever stage is asked for. A compile that could
+        /// not be run at all - a platform this editor has no compiler for - proves nothing and
+        /// denies nothing.
+        /// </summary>
+        private static void VerifyTessellation(string folder, string mergedFamily, TessOutcome outcome)
+        {
+            if (outcome.toVerify.Count == 0) return;
+
+            var platform = EditorCompilerPlatform();
+            var target = EditorUserBuildSettings.activeBuildTarget;
+            bool changed = false;
+
+            foreach (var (suffix, shaderName) in outcome.toVerify)
+            {
+                string failure = null;
+                try
+                {
+                    var shader = Shader.Find(shaderName);
+                    if (shader == null) continue;        // did not import; FindCompiled answers that
+
+                    var data = ShaderUtil.GetShaderData(shader);
+                    if (data == null || data.SubshaderCount == 0) continue;
+
+                    var subshader = data.GetSubshader(0);
+                    for (int p = 0; p < subshader.PassCount && failure == null; p++)
+                    {
+                        var pass = subshader.GetPass(p);
+                        string source = pass.SourceCode;
+                        if (source == null || !source.Contains("#pragma hull")) continue;
+
+                        bool additive = pass.Name != null && pass.Name.Contains("ADD");
+                        foreach (var extra in new[] { null, "STEREO_INSTANCING_ON" })
+                        {
+                            var keywords = new List<string> { additive ? "POINT" : "DIRECTIONAL" };
+                            if (extra != null) keywords.Add(extra);
+
+                            var info = pass.CompileVariant(UnityEditor.Rendering.ShaderType.Vertex,
+                                                           keywords.ToArray(), platform, target);
+                            var error = (info.Messages ?? new ShaderMessage[0]).FirstOrDefault(
+                                m => m.severity ==
+                                     UnityEditor.Rendering.ShaderCompilerMessageSeverity.Error);
+                            if (string.IsNullOrEmpty(error.message)) continue;
+
+                            failure = error.message +
+                                      (extra == null ? "" : " (in the stereo-instanced variant, " +
+                                                            "which is the one VR viewers use)");
+                            break;
+                        }
+
+                        // One hull pass is enough: every pass of a container is built from the
+                        // same blocks, so the override either fits all of them or none.
+                        break;
+                    }
+                }
+                catch (Exception e)
+                {
+                    Debug.Log("[MeshProtect] Could not test-compile '" + shaderName + "': " +
+                              e.Message + ". Its tessellation wiring was left as it is.");
+                    continue;
+                }
+
+                if (failure == null) continue;
+
+                outcome.failedPasses.Add(suffix);
+                changed = true;
+                Debug.LogWarning(
+                    $"[MeshProtect] The tessellating variant '{suffix}' of this merged family " +
+                    $"does not compile with the decode wired in: {failure}. Materials on it ship " +
+                    "unprotected and intact instead. This usually means that product changed how " +
+                    "its tessellation is built in a version newer than this tool knows - please " +
+                    "report it together with the product's version.");
+            }
+
+            if (changed) WriteTessRecord(folder, mergedFamily, outcome);
+        }
+
+        private static UnityEditor.Rendering.ShaderCompilerPlatform EditorCompilerPlatform()
+        {
+            switch (SystemInfo.graphicsDeviceType)
+            {
+                case UnityEngine.Rendering.GraphicsDeviceType.Metal:
+                    return UnityEditor.Rendering.ShaderCompilerPlatform.Metal;
+                case UnityEngine.Rendering.GraphicsDeviceType.Vulkan:
+                    return UnityEditor.Rendering.ShaderCompilerPlatform.Vulkan;
+                case UnityEngine.Rendering.GraphicsDeviceType.OpenGLCore:
+                    return UnityEditor.Rendering.ShaderCompilerPlatform.OpenGLCore;
+                default:
+                    return UnityEditor.Rendering.ShaderCompilerPlatform.D3D;
+            }
         }
 
         /// <summary>
@@ -669,8 +846,15 @@ namespace MeshProtect
 
         /// <summary>Wire one container. Returns null on success, the reason on refusal.</summary>
         private static string WireTessContainer(string path, string dir, string text,
-                                                string tessText, HashSet<string> appended)
+                                                MeshProtectVariant variant,
+                                                HashSet<string> appended,
+                                                out bool hostOwnTessellation)
         {
+            // True when any piece of the pass's tessellation is the host's rather than lilToon's:
+            // a hull stage in a block it ships, a Post block of its own, a control point type of
+            // its own. Those are the passes VerifyTessellation compiles after the import.
+            hostOwnTessellation = false;
+
             const string include = "#include \"custom.hlsl\"";
             if (!text.Contains(include))
                 return "it has no custom.hlsl include to anchor the define on";
@@ -692,11 +876,14 @@ namespace MeshProtect
             // The silent assumption, checked in plain text. Everything else that could move
             // under us breaks into a compile error and the family degrades; this one would
             // compile an override nobody calls.
+            // Every block file the host ships that this container pulls in. They are read twice
+            // below: for the entry point of each hull stage, and for a vertTess of the host's own.
+            var hostBlocks = new List<string>();
             foreach (string raw in text.Split('\n'))
             {
                 string line = raw.TrimStart();
                 if (!line.StartsWith("lilSubShader", StringComparison.Ordinal)) continue;
-                if (line.StartsWith("lilSubShaderInsert", StringComparison.Ordinal)) continue;
+                bool insert = line.StartsWith("lilSubShaderInsert", StringComparison.Ordinal);
                 string value = Quoted(line);
                 if (value == null ||
                     !value.EndsWith(".lilblock", StringComparison.OrdinalIgnoreCase)) continue;
@@ -704,12 +891,35 @@ namespace MeshProtect
                 try { blockPath = Path.GetFullPath(Path.Combine(dir, value)); }
                 catch { return $"the block reference '{value}' cannot be resolved"; }
                 if (!File.Exists(blockPath)) continue;
+                hostBlocks.Add(blockPath);
+                if (insert) continue;
                 string block = File.ReadAllText(blockPath);
                 int hulls = CountOf(block, "#pragma hull");
+                if (hulls > 0) hostOwnTessellation = true;
                 if (hulls > 0 && CountOf(block, "#pragma vertex vertTess") < hulls)
                     return $"'{value}' has a hull stage whose vertex entry is not vertTess, so " +
                            "the decode would have nowhere to run";
             }
+
+            // What the override has to RETURN. The hull stage takes its patch in whatever the
+            // vertTess it was written against hands over, and the override stands in front of
+            // that function - so it returns the same type or the pass does not link. lilToon's
+            // returns appdataCopy, and so did lilSSRT's until 1.4 gave it a control point struct
+            // of its own (lilSSRTTessControlPoint: the instance id and the eye index carried on
+            // ordinary semantics, because SV_InstanceID does not survive the hull). An
+            // appdataCopy override against THAT compiles only while the two structs flatten to
+            // the same number of members - true in the editor and on desktop, false the moment
+            // stereo instancing adds the eye index. So it shipped looking fine and was broken for
+            // every VR viewer, with nothing at merge or build time to say so.
+            //
+            // Read before anything is appended, off the files as the host shipped them.
+            string control = HostTessControlPoint(hostBlocks, dir, out string parameter);
+            if (parameter != null && parameter != "appdata")
+                return $"its own vertTess takes '{parameter}' rather than appdata, so the decode " +
+                       "has no vertex to read";
+            string tessText = MeshProtectShaderGen.EmitTessHlslFor(variant, control);
+            if (postFile != null || control != MeshProtectShaderGen.DefaultTessControlPoint)
+                hostOwnTessellation = true;
 
             if (postFile != null)
             {
@@ -725,8 +935,17 @@ namespace MeshProtect
             {
                 // A created Post block, beside the container. The name must not contain BRP, URP
                 // or HDRP: lilToon's importer tests line.Contains(rpname) before it looks for
-                // lilSubShaderInsertPost, and would eat the declaration as a subshader line.
-                const string postName = "lilMeshProtectTessPost.lilblock";
+                // lilSubShaderInsertPost, and would eat the declaration as a subshader line. That
+                // is also why the suffix below is a token and not the type's own name - a struct
+                // called anything with URP in it would put it straight back.
+                //
+                // One per control point type, not one per folder: two containers in a folder may
+                // tessellate through different blocks, and a block of the host's own may hand
+                // over a different struct than lilToon's does.
+                string postName = control == MeshProtectShaderGen.DefaultTessControlPoint
+                    ? "lilMeshProtectTessPost.lilblock"
+                    : "lilMeshProtectTessPost_" +
+                      MeshProtectForeignShader.Token("tesscontrol:" + control) + ".lilblock";
                 string postPath = Path.Combine(dir, postName);
                 if (!File.Exists(postPath)) File.WriteAllText(postPath, tessText);
 
@@ -743,6 +962,138 @@ namespace MeshProtect
             text = text.Replace(include,
                                 "#define LILMP_TESS_POST\n\n        " + include);
             File.WriteAllText(path, text);
+            return null;
+        }
+
+        /// <summary>
+        /// A vertTess declaration: its return type and the type of its one parameter. Anchored
+        /// to the start of a line so a commented-out one, or a call to it, does not match.
+        /// </summary>
+        private static readonly System.Text.RegularExpressions.Regex VertTessDeclaration =
+            new System.Text.RegularExpressions.Regex(
+                @"^[ \t]*(?!return\b)([A-Za-z_]\w*)[ \t]+vertTess[ \t]*\(\s*([A-Za-z_]\w*)\b",
+                System.Text.RegularExpressions.RegexOptions.Multiline);
+
+        private static readonly System.Text.RegularExpressions.Regex QuotedInclude =
+            new System.Text.RegularExpressions.Regex(
+                "^[ \\t]*#[ \\t]*include[ \\t]+\"([^\"]+)\"",
+                System.Text.RegularExpressions.RegexOptions.Multiline);
+
+        /// <summary>
+        /// The control point type the host's own vertTess returns in a pass built from these
+        /// blocks, or lilToon's when the host declares none.
+        ///
+        /// Includes are followed, because that is where a host keeps it: lilSSRT's Post block
+        /// is three lines and the function lives in ssrt_tessellation.hlsl beside it. A block's
+        /// text is pasted into the shader the container becomes, so its includes resolve from
+        /// the container's folder; an include inside an included file resolves from that file.
+        /// lilToon's own includes are not in the copy and are simply not found, which is right -
+        /// what they declare is the default this returns.
+        /// </summary>
+        private static string HostTessControlPoint(IEnumerable<string> blocks, string containerDir,
+                                                   out string parameter)
+        {
+            parameter = null;
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var pending = new Queue<(string path, string baseDir, int depth)>();
+            foreach (string block in blocks) pending.Enqueue((block, containerDir, 0));
+
+            while (pending.Count > 0)
+            {
+                var (path, baseDir, depth) = pending.Dequeue();
+                if (!seen.Add(path)) continue;
+
+                string source;
+                try { source = File.ReadAllText(path); } catch { continue; }
+
+                var declared = VertTessDeclaration.Match(source);
+                if (declared.Success)
+                {
+                    parameter = declared.Groups[2].Value;
+                    return declared.Groups[1].Value;
+                }
+
+                if (depth >= 4) continue;
+                foreach (System.Text.RegularExpressions.Match include in QuotedInclude.Matches(source))
+                {
+                    string target;
+                    try { target = Path.GetFullPath(Path.Combine(baseDir, include.Groups[1].Value)); }
+                    catch { continue; }
+                    if (File.Exists(target))
+                        pending.Enqueue((target, Path.GetDirectoryName(target), depth + 1));
+                }
+            }
+
+            return MeshProtectShaderGen.DefaultTessControlPoint;
+        }
+
+        /// <summary>
+        /// Does anything in this merged folder declare a vertTess that returns something other
+        /// than lilToon's appdataCopy?
+        ///
+        /// This is the question that decides whether a wiring record written before the override
+        /// learned to follow the host's type can still be trusted. Where the answer is no - a
+        /// lilSSAO family, a lilSSRT from before 1.4 - that older wiring is exactly what this
+        /// version would write, and re-merging would cost the author a rebuild for nothing.
+        /// Where it is yes, the old override is the one that does not compile in VR.
+        /// </summary>
+        private static bool DeclaresOwnControlPoint(string folder)
+        {
+            long stamp = 0;
+            try
+            {
+                string record = Path.Combine(folder, TessMarkerFile);
+                if (File.Exists(record)) stamp = File.GetLastWriteTimeUtc(record).Ticks;
+            }
+            catch { /* an unreadable stamp just means the scan is not remembered */ }
+
+            if (controlPoints.TryGetValue(folder, out var known) && known.stamp == stamp)
+                return known.own;
+
+            bool own = false;
+            try
+            {
+                foreach (string file in Directory.GetFiles(folder, "*", SearchOption.AllDirectories))
+                {
+                    string extension = Path.GetExtension(file);
+                    if (!extension.Equals(".hlsl", StringComparison.OrdinalIgnoreCase) &&
+                        !extension.Equals(".cginc", StringComparison.OrdinalIgnoreCase) &&
+                        !extension.Equals(".lilblock", StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    foreach (System.Text.RegularExpressions.Match declared in
+                             VertTessDeclaration.Matches(File.ReadAllText(file)))
+                    {
+                        if (declared.Groups[1].Value == MeshProtectShaderGen.DefaultTessControlPoint)
+                            continue;
+                        own = true;
+                        break;
+                    }
+                    if (own) break;
+                }
+            }
+            catch { own = true; }   // cannot tell, so do not vouch for the old wiring
+
+            controlPoints[folder] = (stamp, own);
+            return own;
+        }
+
+        /// <summary>
+        /// Strip the format prefix off a wiring record this version may act on, or return null.
+        ///
+        /// The current format always qualifies. The previous one qualifies too, as long as the
+        /// folder it describes has no control point of its own - see DeclaresOwnControlPoint.
+        /// </summary>
+        private static string UsableTessRecord(string folder, string text)
+        {
+            string current = "tessgen=" + TessFormat + ";";
+            if (text.StartsWith(current, StringComparison.Ordinal))
+                return text.Substring(current.Length);
+
+            string previous = "tessgen=" + TessFormatAssumingAppdataCopy + ";";
+            if (text.StartsWith(previous, StringComparison.Ordinal) && !DeclaresOwnControlPoint(folder))
+                return text.Substring(previous.Length);
+
             return null;
         }
 
@@ -808,12 +1159,11 @@ namespace MeshProtect
         {
             try
             {
-                string path = Path.Combine(Folder(settings, variant, host), TessMarkerFile);
+                string folder = Folder(settings, variant, host);
+                string path = Path.Combine(folder, TessMarkerFile);
                 if (!File.Exists(path)) return null;
-                string text = File.ReadAllText(path).Trim();
-                string prefix = "tessgen=" + TessFormat + ";";
-                if (!text.StartsWith(prefix, StringComparison.Ordinal)) return null;
-                string rest = text.Substring(prefix.Length);
+                string rest = UsableTessRecord(folder, File.ReadAllText(path).Trim());
+                if (rest == null) return null;
                 if (rest == "ok") return new HashSet<string>(StringComparer.Ordinal);
                 const string deny = "deny=";
                 if (!rest.StartsWith(deny, StringComparison.Ordinal)) return null;
@@ -838,8 +1188,8 @@ namespace MeshProtect
             try
             {
                 string path = Path.Combine(folder, TessMarkerFile);
-                return File.Exists(path) && File.ReadAllText(path).TrimStart()
-                    .StartsWith("tessgen=" + TessFormat + ";", StringComparison.Ordinal);
+                return File.Exists(path) &&
+                       UsableTessRecord(folder, File.ReadAllText(path).Trim()) != null;
             }
             catch { return false; }
         }

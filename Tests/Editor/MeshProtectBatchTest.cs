@@ -89,6 +89,7 @@ namespace MPTest
                     TestSharedEmittersArePinned();
                 TestTessDenyListIsQualified();
                     TestTessellationEmitterIsPinned();
+                    TestTessOverrideFollowsTheHostsControlPoint();
                 }
                 finally
                 {
@@ -294,7 +295,7 @@ namespace MPTest
                 patch.Invoke(null, new object[] { variant, folder, "FakeFam" });
 
                 string record = File.ReadAllText(Path.Combine(folder, "tess.txt")).Trim();
-                Check(record.StartsWith("tessgen=2;deny=", StringComparison.Ordinal),
+                Check(record.StartsWith("tessgen=3;deny=", StringComparison.Ordinal),
                       "tessdeny/failure-is-recorded",
                       "a hull pass entered through vertSomethingElse must land on the deny " +
                       "list, got: " + record);
@@ -322,6 +323,142 @@ namespace MPTest
             finally
             {
                 try { Directory.Delete(folder, true); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// The override's RETURN TYPE, on crafted merged folders.
+        ///
+        /// It used to be lilToon's appdataCopy everywhere, and lilSSRT 1.4 gave its AO
+        /// tessellation a control point struct of its own. The two flatten to the same number
+        /// of members without stereo instancing and to different numbers with it, so the
+        /// mismatch compiled in the editor and on desktop and failed in the one variant a VR
+        /// viewer draws with - a shipped avatar, protected, and broken for half the room. The
+        /// host test compiles the real thing when lilSSRT is installed; the product is
+        /// commercial, so this pins the reading of the type on text that needs nothing installed.
+        ///
+        /// Three shapes: a host that declares its own control point in a file its Post block
+        /// includes (lilSSRT's shape), a host with a Post block and no vertTess of its own, and
+        /// a stock container with no Post block at all. And the record rule that delivers the
+        /// fix: a format 2 record is honoured only where the host has no control point of its
+        /// own, because that is exactly where format 2's wiring is what this version writes.
+        /// </summary>
+        private static void TestTessOverrideFollowsTheHostsControlPoint()
+        {
+            string folder = Path.Combine(Path.GetTempPath(),
+                                         "mp-controltest-" + Path.GetRandomFileName());
+            try
+            {
+                Directory.CreateDirectory(Path.Combine(folder, "AO"));
+                Directory.CreateDirectory(Path.Combine(folder, "Plain"));
+                Directory.CreateDirectory(Path.Combine(folder, "Stock"));
+
+                string Container(string name, string post, string block) =>
+                    "Shader \"Hidden/*LIL_SHADER_NAME*/" + name + "\"\n" +
+                    "{\n    HLSLINCLUDE\n        #include \"custom.hlsl\"\n    ENDHLSL\n" +
+                    "    lilSubShaderInsert \"insert.lilblock\"\n" +
+                    (post == null ? "" : "    lilSubShaderInsertPost \"" + post + "\"\n") +
+                    "    lilSubShaderBRP \"" + block + "\"\n}\n";
+
+                const string hull = "#pragma vertex vertTess\n#pragma hull hull\n#pragma domain domain\n";
+
+                // 1. lilSSRT's shape: the function is one include away from the Post block, and
+                //    a commented-out appdataCopy version sits above it to be ignored.
+                File.WriteAllText(Path.Combine(folder, "AO", "lilCustomShaderDatas.lilblock"),
+                                  "ShaderName \"FakeFam/AO\"\n");
+                File.WriteAllText(Path.Combine(folder, "fixedtess.lilblock"), hull);
+                File.WriteAllText(Path.Combine(folder, "own_tess.hlsl"),
+                                  "struct MyControlPoint { float4 positionOS : POSITION; };\n" +
+                                  "// appdataCopy vertTess(appdata input)\n" +
+                                  "MyControlPoint vertTess(appdata input)\n{\n    MyControlPoint o;\n" +
+                                  "    return o;\n}\n");
+                File.WriteAllText(Path.Combine(folder, "AO", "post.lilblock"),
+                                  "#include \"../own_tess.hlsl\"\n");
+                File.WriteAllText(Path.Combine(folder, "AO", "ltspass_aotess.lilcontainer"),
+                                  Container("ltspass_aotess", "post.lilblock", "../fixedtess.lilblock"));
+
+                // 2. A Post block of the host's own that declares no vertTess.
+                File.WriteAllText(Path.Combine(folder, "Plain", "lilCustomShaderDatas.lilblock"),
+                                  "ShaderName \"FakeFam/Plain\"\n");
+                File.WriteAllText(Path.Combine(folder, "Plain", "post.lilblock"), "// nothing of ours\n");
+                File.WriteAllText(Path.Combine(folder, "Plain", "ltspass_tess.lilcontainer"),
+                                  Container("ltspass_tess", "post.lilblock", "DefaultTessellation"));
+
+                // 3. Stock: no Post block, lilToon's own tessellation.
+                File.WriteAllText(Path.Combine(folder, "Stock", "lilCustomShaderDatas.lilblock"),
+                                  "ShaderName \"FakeFam/Stock\"\n");
+                File.WriteAllText(Path.Combine(folder, "Stock", "ltspass_tess.lilcontainer"),
+                                  Container("ltspass_tess", null, "DefaultTessellation"));
+
+                var variant = MeshProtectVariantGenerator.Generate(new System.Random(20261117));
+                var host = typeof(MeshProtectLilHost);
+                var patch = host.GetMethod("PatchTessellation",
+                                           BindingFlags.NonPublic | BindingFlags.Static);
+                var current = host.GetMethod("TessRecordCurrent",
+                                             BindingFlags.NonPublic | BindingFlags.Static);
+                if (patch == null || current == null)
+                {
+                    Check(false, "tesscontrol/methods-exist",
+                          "MeshProtectLilHost.PatchTessellation or TessRecordCurrent is gone");
+                    return;
+                }
+                patch.Invoke(null, new object[] { variant, folder, "FakeFam" });
+
+                string record = File.ReadAllText(Path.Combine(folder, "tess.txt")).Trim();
+                Check(record == "tessgen=3;ok", "tesscontrol/all-three-wire",
+                      "every shape here is one the wiring supports, recorded: " + record);
+
+                string ownPost = File.ReadAllText(Path.Combine(folder, "AO", "post.lilblock"));
+                Check(ownPost.Contains("MyControlPoint vertTess(appdata input)") &&
+                      !ownPost.Contains("appdataCopy vertTess(appdata input)"),
+                      "tesscontrol/override-returns-the-hosts-own-type",
+                      "an override typed appdataCopy in front of a vertTess that returns " +
+                      "MyControlPoint is the mismatch that only fails in stereo-instanced variants");
+
+                string plainPost = File.ReadAllText(Path.Combine(folder, "Plain", "post.lilblock"));
+                Check(plainPost.Contains("appdataCopy vertTess(appdata input)"),
+                      "tesscontrol/no-declaration-means-liltoons-type",
+                      "a host Post block with no vertTess of its own leaves lilToon's in charge");
+
+                string stockPost = Path.Combine(folder, "Stock", "lilMeshProtectTessPost.lilblock");
+                Check(File.Exists(stockPost) &&
+                      File.ReadAllText(stockPost).Contains("appdataCopy vertTess(appdata input)"),
+                      "tesscontrol/stock-container-keeps-its-created-post-block",
+                      "the stock path must be byte for byte what it was");
+
+                foreach (string armed in new[] { "AO/ltspass_aotess.lilcontainer",
+                                                 "Plain/ltspass_tess.lilcontainer",
+                                                 "Stock/ltspass_tess.lilcontainer" })
+                    Check(File.ReadAllText(Path.Combine(folder, armed)).Contains("#define LILMP_TESS_POST"),
+                          "tesscontrol/armed:" + armed, "the rename is armed in every wired container");
+
+                // The record rule. This folder declares a control point of its own, so a record
+                // from the format that assumed appdataCopy must not be trusted here...
+                File.WriteAllText(Path.Combine(folder, "tess.txt"), "tessgen=2;ok");
+                MeshProtectLilHost.Forget();
+                Check(!(bool)current.Invoke(null, new object[] { folder }),
+                      "tesscontrol/old-record-is-stale-where-the-host-has-its-own-type",
+                      "this is the merged family that was built broken; it has to re-merge");
+
+                // ...and must be, in a folder that has none: re-merging that one would cost its
+                // author a rebuild to write the same text again.
+                File.Delete(Path.Combine(folder, "own_tess.hlsl"));
+                File.WriteAllText(Path.Combine(folder, "AO", "post.lilblock"),
+                                  "appdataCopy vertTess(appdata input) { return input; }\n");
+                File.WriteAllText(Path.Combine(folder, "tess.txt"), "tessgen=2;ok");
+                MeshProtectLilHost.Forget();
+                Check((bool)current.Invoke(null, new object[] { folder }),
+                      "tesscontrol/old-record-still-serves-where-it-was-right",
+                      "lilSSAO and lilSSRT before 1.4 were wired correctly by format 2");
+            }
+            catch (Exception e)
+            {
+                Check(false, "tesscontrol/no-exception", e.InnerException?.Message ?? e.Message);
+            }
+            finally
+            {
+                try { Directory.Delete(folder, true); } catch { }
+                MeshProtectLilHost.Forget();
             }
         }
 

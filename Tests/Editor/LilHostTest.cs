@@ -172,8 +172,37 @@ namespace MPTest
                                 System.IO.Path.Combine(System.IO.Path.GetDirectoryName(p), "host.txt"))
                                 .Contains("host=" + family + ";"));
                         Check(tessRecord != null && System.IO.File.ReadAllText(tessRecord)
-                                  .Trim().StartsWith("tessgen=2;"),
+                                  .Trim().StartsWith("tessgen=3;"),
                               $"{family}: the wiring record exists and carries the current format");
+
+                        // Compiled, not just found. lilToon's importer compiles nothing at
+                        // import and Unity builds a variant when something first draws with it,
+                        // so every assertion above is satisfied by a shader that fails the
+                        // moment a VR viewer looks at it - and that is exactly what shipped
+                        // against lilSSRT 1.4: its AO tessellation hands the hull a control
+                        // point struct of its own, the override in front of it was typed with
+                        // lilToon's, and the two only stop being interchangeable when stereo
+                        // instancing adds the eye index. Plain variant fine, VR variant
+                        // "cannot convert from 'lilSSRTTessControlPoint' to 'appdataCopy'".
+                        foreach (string passName in new[]
+                                 {
+                                     "/GTAO/ltspass_aotess_opaque", "/RTAO/ltspass_aotess_opaque",
+                                     "/GTAO/ltspass_aotess_transparent", "/ltspass_tess_opaque",
+                                     "/GTAO/ltspass_tess_opaque", "/ltspass_opaque",
+                                 })
+                        {
+                            var pass = Shader.Find("Hidden/" + merged + passName);
+                            if (pass == null) continue;
+
+                            foreach (string keyword in new[] { null, "STEREO_INSTANCING_ON" })
+                            {
+                                string error = CompileError(pass, keyword);
+                                Check(error == null,
+                                      $"{family}: merged {passName} compiles" +
+                                      (keyword == null ? "" : " in the stereo-instanced variant VR uses") +
+                                      (error == null ? "" : " - " + error));
+                            }
+                        }
                         if (tessRecord != null && tess != null)
                         {
                             string saved = System.IO.File.ReadAllText(tessRecord);
@@ -227,7 +256,7 @@ namespace MPTest
                             if (gtaoTess != null)
                             {
                                 System.IO.File.WriteAllText(tessRecord,
-                                    "tessgen=2;deny=GTAO/AOTessellation/Opaque");
+                                    "tessgen=3;deny=GTAO/AOTessellation/Opaque");
                                 Check(MeshProtectLilHost.MergedShaderFor(root, root.variant,
                                           host, gtaoTess) == null,
                                       $"{family}: a qualified deny entry refuses its variant");
@@ -235,7 +264,7 @@ namespace MPTest
                                           host, material.shader) != null,
                                       $"{family}: a deny entry does not spill onto other variants");
 
-                                System.IO.File.WriteAllText(tessRecord, "tessgen=2;deny=*");
+                                System.IO.File.WriteAllText(tessRecord, "tessgen=3;deny=*");
                                 Check(MeshProtectLilHost.MergedShaderFor(root, root.variant,
                                           host, gtaoTess) == null,
                                       $"{family}: deny=* falls back to the name refusal");
@@ -254,7 +283,7 @@ namespace MPTest
                                 root, root.variant, host, out _, false);
                             bool recordBack = System.IO.File.Exists(tessRecord) &&
                                 System.IO.File.ReadAllText(tessRecord).Trim()
-                                    .StartsWith("tessgen=2;");
+                                    .StartsWith("tessgen=3;");
                             Check(remerged && recordBack,
                                   $"{family}: a record-less merge re-merges without force " +
                                   (remerged
@@ -420,6 +449,36 @@ namespace MPTest
             mesh.boneWeights = w;
             mesh.bindposes = new[] { Matrix4x4.identity };
             return mesh;
+        }
+
+        /// <summary>
+        /// Build the vertex stage of the first forward pass of a pass shader with one extra
+        /// keyword, and hand back the first error or null. An ill-typed function fails the whole
+        /// translation unit, so one stage is enough to find one.
+        /// </summary>
+        private static string CompileError(Shader shader, string keyword)
+        {
+            var data = ShaderUtil.GetShaderData(shader);
+            if (data == null || data.SubshaderCount == 0) return "no subshader";
+
+            var subshader = data.GetSubshader(0);
+            for (int p = 0; p < subshader.PassCount; p++)
+            {
+                var pass = subshader.GetPass(p);
+                if (pass.Name != "FORWARD") continue;
+
+                var keywords = new System.Collections.Generic.List<string> { "DIRECTIONAL" };
+                if (keyword != null) keywords.Add(keyword);
+
+                var info = pass.CompileVariant(UnityEditor.Rendering.ShaderType.Vertex,
+                                               keywords.ToArray(),
+                                               UnityEditor.Rendering.ShaderCompilerPlatform.D3D,
+                                               BuildTarget.StandaloneWindows64);
+                var error = (info.Messages ?? new ShaderMessage[0]).FirstOrDefault(
+                    m => m.severity == UnityEditor.Rendering.ShaderCompilerMessageSeverity.Error);
+                return string.IsNullOrEmpty(error.message) ? null : error.message;
+            }
+            return "no FORWARD pass";
         }
 
         /// <summary>Any shader belonging to the family, whatever variant lilToon generated.</summary>

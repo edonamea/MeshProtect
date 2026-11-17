@@ -57,6 +57,9 @@ namespace MPTest
             failed += Report("IntegrationTest",      IntegrationTest.RunCore());
             failed += Report("MeshProtectBatchTest", MeshProtectBatchTest.RunAllCore());
             failed += Report("UnlockChainTest",      UnlockChainTest.RunCore());
+#if LILMP_VRCSDK3_AVATARS
+            failed += Report("LockGateTest",         LockGateTest.RunCore());
+#endif
             failed += Report("BundleRoundTripTest",  BundleRoundTripTest.RunCore());
 
             Debug.Log(failed == 0
