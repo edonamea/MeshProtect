@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.3.1
+
+- **A material swap in an FX layer that another tool stored in a separate file no longer stops
+  the build.** NDMF saves what it generates 256 objects to a file, so on a large avatar - in
+  practice any avatar in a project with Modular Avatar installed - the FX controller and parts of
+  its own layers end up in different files, and the build's copy of the FX took only the
+  controller's file. A swap playing in one of the other files stopped the upload with "FX state
+  ... lives outside this build's controller copy"; it was reported with lilycalInventory's
+  CostumeChanger material switching and Avatar Optimizer. The copy now brings those parts inside
+  before the swaps are re-pointed.
+- **Toggles that switched on and never came back off are fixed.** The same split can cut a layer
+  in two, and a transition stored in the second file then pointed at the original state instead of
+  the copy's - the layer went on and stayed on, with nothing said at build time. Measured on a real
+  Modular Avatar build of 1.3.0: the layer at the file boundary did exactly that. Every transition
+  now points inside the copy.
+- Names are decided exactly as before, so no parameter is renamed that 1.3.0 left alone: saved
+  values and OSC setups are unaffected by the update.
+- **The unlock entry no longer pushes an existing More page down.** When the page it goes to is
+  full and already ends in a More page - Modular Avatar ends every page it splits that way - the
+  entry is added at the end of that chain instead of wrapping it in a second More, and the Console
+  says where. An explicit position works as before.
+
 ## 1.3.0
 
 - **Every shader that carries the decode is now measured before it is used, instead of being

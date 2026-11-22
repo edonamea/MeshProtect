@@ -470,8 +470,15 @@ namespace MPTest
                 TestOverrideControllerFxLayer(lilToon, "clip-is-own-asset", false);
                 TestOverrideControllerFxLayer(lilToon, "clip-inside-controller", true);
                 TestMaterialSwapAnimation(lilToon);
+                TestFxLayerInAnotherFile(lilToon, false);
+                TestFxLayerInAnotherFile(lilToon, true);
+                TestCutLayerKeepsItsTransitions(lilToon);
+                TestOverrideWithLayerInAnotherFile(lilToon);
                 TestFullRootMenu(lilToon, "has-room", 5);
                 TestFullRootMenu(lilToon, "is-full", 8);
+                TestFullRootMenuEndingInMore(lilToon, "one", new[] { 7, 2 });
+                TestFullRootMenuEndingInMore(lilToon, "chain", new[] { 7, 7, 2 });
+                TestFullRootMenuEndingInMore(lilToon, "full-end", new[] { 7, 8 });
 
                 Say(failures == 0 ? "=== ALL PASSED ===" : $"=== {failures} FAILURE(S) ===");
                 exit = failures == 0 ? 0 : 1;
@@ -2071,6 +2078,415 @@ namespace MPTest
             }
         }
 
+        /// <summary>
+        /// An FX layer stored in another file than the FX controller.
+        ///
+        /// NDMF saves what it generates 256 objects to a file, so on a large avatar the FX
+        /// controller and some of its own layers end up apart, and copying the controller's file
+        /// left those layers shared. A material swap playing in one of them stopped the build
+        /// ("FX state ... lives outside this build's controller copy"); reported with
+        /// lilycalInventory and Avatar Optimizer. The layer must arrive in the copy whole - sub-state
+        /// machine, every kind of transition, behaviours, a synced layer's override - with the swap
+        /// re-pointed and the files it came from untouched - and, obfuscation on or off, with the
+        /// names it would have shipped with before.
+        /// </summary>
+        private static void TestFxLayerInAnotherFile(Shader lilToon, bool obfuscate)
+        {
+            string label = obfuscate ? "obfuscated" : "plain";
+            GameObject root = null;
+            const string dir = "Assets/_MPTestScratch";
+            string fxPath = dir + "/ElsewhereFx.controller";
+            string elsewherePath = dir + "/Elsewhere.controller";
+            string swapPath = dir + "/ElsewhereSwap.anim";
+            string plainPath = dir + "/ElsewherePlain.anim";
+            string matPath = dir + "/ElsewhereSwapSkin.mat";
+            try
+            {
+                root = BuildMinimalAvatar(lilToon, "ElsewhereAvatar_" + label, 4716, out _, out var settings);
+                settings.obfuscateAnimatorNames = obfuscate;
+                var variant = settings.variant;
+                if (!AssetDatabase.IsValidFolder(dir)) AssetDatabase.CreateFolder("Assets", "_MPTestScratch");
+
+                var swapSkin = new Material(lilToon) { name = "ElsewhereSwapSkin" };
+                AssetDatabase.CreateAsset(swapSkin, matPath);
+                var swap = new AnimationClip { name = "ElsewhereSwap" };
+                AnimationUtility.SetObjectReferenceCurve(swap,
+                    EditorCurveBinding.PPtrCurve("Body", typeof(SkinnedMeshRenderer), "m_Materials.Array.data[0]"),
+                    new[] { new ObjectReferenceKeyframe { time = 0f, value = swapSkin } });
+                AssetDatabase.CreateAsset(swap, swapPath);
+                var plain = new AnimationClip { name = "ElsewherePlain" };
+                AnimationUtility.SetEditorCurve(plain,
+                    EditorCurveBinding.FloatCurve("Body", typeof(Transform), "m_LocalScale.y"),
+                    AnimationCurve.Constant(0f, 0f, 1f));
+                AssetDatabase.CreateAsset(plain, plainPath);
+
+                var fx = AnimatorController.CreateAnimatorControllerAtPath(fxPath);
+                fx.AddParameter("Toggle", AnimatorControllerParameterType.Bool);
+                fx.AddParameter("Go", AnimatorControllerParameterType.Int);
+                fx.AddParameter("Reset", AnimatorControllerParameterType.Trigger);
+                var elsewhere = AnimatorController.CreateAnimatorControllerAtPath(elsewherePath);
+
+                var machine = new AnimatorStateMachine { name = "Outfit", hideFlags = HideFlags.HideInHierarchy };
+                AssetDatabase.AddObjectToAsset(machine, elsewhere);
+                var idle = machine.AddState("Idle");
+                idle.motion = plain;
+                var worn = machine.AddState("Worn");
+                worn.motion = plain;
+                var sub = machine.AddStateMachine("Sub");
+                var subA = sub.AddState("SubA");
+                subA.motion = swap;
+                var subB = sub.AddState("SubB");
+                subB.motion = plain;
+                machine.defaultState = worn;
+                idle.AddTransition(worn).AddCondition(AnimatorConditionMode.If, 0, "Toggle");
+                worn.AddTransition(idle).AddCondition(AnimatorConditionMode.IfNot, 0, "Toggle");
+                worn.AddTransition(sub).AddCondition(AnimatorConditionMode.Equals, 2, "Go");
+                subA.AddTransition(subB).AddCondition(AnimatorConditionMode.Greater, 3, "Go");
+                subB.AddExitTransition().AddCondition(AnimatorConditionMode.Less, 1, "Go");
+                machine.AddAnyStateTransition(idle).AddCondition(AnimatorConditionMode.If, 0, "Reset");
+                machine.AddEntryTransition(sub).AddCondition(AnimatorConditionMode.Equals, 9, "Go");
+                machine.AddStateMachineTransition(sub, idle).AddCondition(AnimatorConditionMode.Equals, 5, "Go");
+                worn.AddStateMachineBehaviour<VRCAvatarParameterDriver>().parameters.Add(
+                    new VRC.SDKBase.VRC_AvatarParameterDriver.Parameter
+                        { name = "Go", type = VRC.SDKBase.VRC_AvatarParameterDriver.ChangeType.Set, value = 4 });
+
+                fx.AddLayer(new AnimatorControllerLayer { name = "Outfit", stateMachine = machine, defaultWeight = 1f });
+                int outfit = fx.layers.Length - 1;
+                var synced = new AnimatorControllerLayer
+                {
+                    name = "OutfitSynced", syncedLayerIndex = outfit, defaultWeight = 1f,
+                    stateMachine = new AnimatorStateMachine { name = "OutfitSynced", hideFlags = HideFlags.HideInHierarchy }
+                };
+                AssetDatabase.AddObjectToAsset(synced.stateMachine, fx);
+                synced.SetOverrideMotion(idle, plain);
+                fx.AddLayer(synced);
+                EditorUtility.SetDirty(fx);
+                AssetDatabase.SaveAssets();
+
+                var descriptor = root.GetComponent<VRCAvatarDescriptor>();
+                descriptor.customizeAnimationLayers = true;
+                descriptor.baseAnimationLayers = new[]
+                {
+                    new VRCAvatarDescriptor.CustomAnimLayer
+                        { type = VRCAvatarDescriptor.AnimLayerType.FX, isDefault = false, animatorController = fx }
+                };
+
+                var files = new[] { fxPath, elsewherePath, swapPath, plainPath };
+                var before = files.ToDictionary(p => p, p => File.ReadAllBytes(p));
+                string originalGraph = LayerGraph(machine);
+                var originals = LayerObjects(machine);
+
+                bool ok;
+                string thrown = null;
+                try { ok = new MeshProtectBuildHook().OnPreprocessAvatar(root); }
+                catch (Exception e) { ok = false; thrown = e.Message; }
+                AssetDatabase.SaveAssets();
+
+                var shippedRuntime = descriptor.baseAnimationLayers
+                    .Where(l => l.type == VRCAvatarDescriptor.AnimLayerType.FX)
+                    .Select(l => l.animatorController).FirstOrDefault();
+                while (shippedRuntime is AnimatorOverrideController o) shippedRuntime = o.runtimeAnimatorController;
+                var shipped = shippedRuntime as AnimatorController;
+                string shippedPath = shipped == null ? null : AssetDatabase.GetAssetPath(shipped);
+
+                // Everything every shipped layer reaches, wherever it is.
+                var reached = new HashSet<UnityEngine.Object>();
+                if (shipped != null)
+                    foreach (var l in shipped.layers) reached.UnionWith(LayerObjects(l.stateMachine));
+                var outside = reached.Where(x => AssetDatabase.GetAssetPath(x) != shippedPath).ToList();
+                bool distinct = !reached.Overlaps(originals);
+
+                var landed = shipped == null ? new List<Material>() : shipped.animationClips
+                    .Where(c => c != null).Distinct()
+                    .SelectMany(c => AnimationUtility.GetObjectReferenceCurveBindings(c)
+                        .SelectMany(b => AnimationUtility.GetObjectReferenceCurve(c, b)))
+                    .Select(k => k.value as Material).Where(m => m != null).ToList();
+                bool decoded = landed.Count > 0 && landed.All(m => MeshProtectPipeline.IsProtectShader(m, variant.shaderName));
+
+                var changed = files.Where(p => !File.ReadAllBytes(p).SequenceEqual(before[p])).ToList();
+                bool originalsIntact = LayerGraph(machine) == originalGraph;
+
+                AnimatorControllerLayer layer = null, syncedLayer = null;
+                if (shipped != null)
+                {
+                    var layers = shipped.layers;
+                    int index = Array.FindIndex(layers, l => l.stateMachine != null && l.stateMachine.name == "Outfit");
+                    if (index >= 0)
+                    {
+                        layer = layers[index];
+                        syncedLayer = layers.FirstOrDefault(l => l.syncedLayerIndex == index);
+                    }
+                }
+                bool sameGraph = layer != null && LayerGraph(layer.stateMachine) == originalGraph;
+                var idleShipped = layer?.stateMachine.states.Select(c => c.state).FirstOrDefault(s => s.name == "Idle");
+                bool overrideFollows = syncedLayer != null && idleShipped != null &&
+                                       syncedLayer.GetOverrideMotion(idleShipped) != null;
+
+                // Names are decided before the layer is copied in, exactly as they were while it
+                // stayed shared: a parameter this layer uses keeps its name. Renaming it would
+                // reset saved values for everyone who updates.
+                var declared = shipped == null ? new HashSet<string>()
+                    : new HashSet<string>(shipped.parameters.Select(p => p.name));
+                bool namesKept = new[] { "Toggle", "Go", "Reset" }.All(declared.Contains);
+
+                bool passed = ok && outside.Count == 0 && distinct && sameGraph && decoded && overrideFollows &&
+                              namesKept && changed.Count == 0 && originalsIntact;
+                Check(passed, "swap/layer-in-another-file-" + label,
+                      thrown != null ? "the build threw: " + thrown
+                      : !ok ? "the build was refused over a layer stored in another file"
+                      : outside.Count > 0 ? $"{outside.Count} shipped object(s) are still outside the shipped FX file"
+                      : !distinct ? "the shipped FX shares objects with the original layer"
+                      : layer == null ? "the shipped FX has no Outfit layer"
+                      : !sameGraph ? "the copied layer differs from the original: " + LayerGraph(layer.stateMachine)
+                      : !decoded ? "a shipped material keyframe is not a decode copy"
+                      : !overrideFollows ? "the synced layer lost its override for the copied state"
+                      : !namesKept ? "a parameter the layer uses was renamed: " + string.Join(", ", declared)
+                      : changed.Count > 0 ? "source files changed: " + string.Join(", ", changed)
+                      : !originalsIntact ? "the original layer was modified in memory"
+                      : "the layer arrived whole with its names, its swap re-pointed, and its files untouched");
+            }
+            finally
+            {
+                if (root != null) UnityEngine.Object.DestroyImmediate(root);
+                foreach (var mpbuild in new[] { MeshProtectShaderGen.OutputRoot(null) + "/_MeshProtectBuild",
+                                               "Assets/_MeshProtectBuild" })
+                    if (AssetDatabase.IsValidFolder(mpbuild)) AssetDatabase.DeleteAsset(mpbuild);
+                foreach (var a in new[] { fxPath, elsewherePath, swapPath, plainPath, matPath })
+                    AssetDatabase.DeleteAsset(a);
+            }
+        }
+
+        /// <summary>
+        /// A toggle layer cut in two the way NDMF's 256-object files cut it: the state machine,
+        /// Off and Off -> On stay with the controller, On and On -> Off are in the next file.
+        /// On -> Off points BACK into the controller's file, so after a one-file copy it targeted
+        /// the original Off, which is not in the copied layer: measured on 1.3.0, the toggle turned
+        /// on and never came back, with nothing said. Driven here with a real Animator.
+        /// </summary>
+        private static void TestCutLayerKeepsItsTransitions(Shader lilToon)
+        {
+            GameObject root = null;
+            const string dir = "Assets/_MPTestScratch";
+            string fxPath = dir + "/CutFx.controller";
+            string nextPath = dir + "/CutNext.controller";
+            string offPath = dir + "/CutOff.anim";
+            string onPath = dir + "/CutOn.anim";
+            try
+            {
+                root = BuildMinimalAvatar(lilToon, "CutAvatar", 4717, out _, out var settings);
+                settings.obfuscateAnimatorNames = false;
+                var marker = new GameObject("Marker");
+                marker.transform.SetParent(root.transform, false);
+                if (!AssetDatabase.IsValidFolder(dir)) AssetDatabase.CreateFolder("Assets", "_MPTestScratch");
+
+                AnimationClip Scale(string path, float x)
+                {
+                    var clip = new AnimationClip { name = Path.GetFileNameWithoutExtension(path) };
+                    AnimationUtility.SetEditorCurve(clip,
+                        EditorCurveBinding.FloatCurve("Marker", typeof(Transform), "m_LocalScale.x"),
+                        AnimationCurve.Constant(0f, 1f / 60f, x));
+                    AssetDatabase.CreateAsset(clip, path);
+                    return clip;
+                }
+                var offClip = Scale(offPath, 1f);
+                var onClip = Scale(onPath, 2f);
+
+                var fx = AnimatorController.CreateAnimatorControllerAtPath(fxPath);
+                fx.AddParameter("Toggle", AnimatorControllerParameterType.Bool);
+                fx.AddParameter("Never", AnimatorControllerParameterType.Bool);
+                var machine = fx.layers[0].stateMachine;
+                var off = machine.AddState("Off");
+                off.motion = offClip;
+                var next = AnimatorController.CreateAnimatorControllerAtPath(nextPath);
+                var on = new AnimatorState { name = "On", motion = onClip, writeDefaultValues = true,
+                                             hideFlags = HideFlags.HideInHierarchy };
+                AssetDatabase.AddObjectToAsset(on, next);
+                machine.states = machine.states.Concat(new[]
+                    { new ChildAnimatorState { state = on, position = new Vector3(300, 0, 0) } }).ToArray();
+                machine.defaultState = off;
+                var toOn = off.AddTransition(on);
+                toOn.AddCondition(AnimatorConditionMode.If, 0, "Toggle");
+                toOn.hasExitTime = false;
+                toOn.duration = 0f;
+                var toOff = on.AddTransition(off);           // stored with On: next file -> back
+                toOff.AddCondition(AnimatorConditionMode.IfNot, 0, "Toggle");
+                toOff.hasExitTime = false;
+                toOff.duration = 0f;
+
+                // NDMF saves a machine's AnyState and Entry transitions after all its states, so
+                // they are the likeliest to spill past the cut and point back.
+                var anyOff = new AnimatorStateTransition
+                    { destinationState = off, hasExitTime = false, duration = 0f,
+                      canTransitionToSelf = false, hideFlags = HideFlags.HideInHierarchy };
+                anyOff.AddCondition(AnimatorConditionMode.IfNot, 0, "Toggle");
+                AssetDatabase.AddObjectToAsset(anyOff, next);
+                machine.anyStateTransitions = machine.anyStateTransitions.Concat(new[] { anyOff }).ToArray();
+                var entryOff = new AnimatorTransition { destinationState = off, hideFlags = HideFlags.HideInHierarchy };
+                entryOff.AddCondition(AnimatorConditionMode.IfNot, 0, "Toggle");
+                AssetDatabase.AddObjectToAsset(entryOff, next);
+                machine.entryTransitions = machine.entryTransitions.Concat(new[] { entryOff }).ToArray();
+
+                // A sub-state machine in the next file whose state leads back to the root machine.
+                var deep = new AnimatorStateMachine { name = "Deep", hideFlags = HideFlags.HideInHierarchy };
+                AssetDatabase.AddObjectToAsset(deep, next);
+                var deepState = deep.AddState("DeepState");
+                deepState.motion = offClip;
+                machine.stateMachines = machine.stateMachines.Concat(new[]
+                    { new ChildAnimatorStateMachine { stateMachine = deep, position = new Vector3(0, 200, 0) } }).ToArray();
+                off.AddTransition(deep).AddCondition(AnimatorConditionMode.If, 0, "Never");
+                deepState.AddTransition(machine).AddCondition(AnimatorConditionMode.If, 0, "Never");
+
+                EditorUtility.SetDirty(fx);
+                AssetDatabase.SaveAssets();
+
+                var descriptor = root.GetComponent<VRCAvatarDescriptor>();
+                descriptor.customizeAnimationLayers = true;
+                descriptor.baseAnimationLayers = new[]
+                {
+                    new VRCAvatarDescriptor.CustomAnimLayer
+                        { type = VRCAvatarDescriptor.AnimLayerType.FX, isDefault = false, animatorController = fx }
+                };
+                var files = new[] { fxPath, nextPath, offPath, onPath };
+                var before = files.ToDictionary(p => p, p => File.ReadAllBytes(p));
+
+                bool ok;
+                string thrown = null;
+                try { ok = new MeshProtectBuildHook().OnPreprocessAvatar(root); }
+                catch (Exception e) { ok = false; thrown = e.Message; }
+                AssetDatabase.SaveAssets();
+
+                var shipped = descriptor.baseAnimationLayers
+                    .Where(l => l.type == VRCAvatarDescriptor.AnimLayerType.FX)
+                    .Select(l => l.animatorController).FirstOrDefault() as AnimatorController;
+                int index = shipped == null ? -1 : Array.FindIndex(shipped.layers, l =>
+                    l.stateMachine != null && l.stateMachine.states.Any(c => c.state != null && c.state.name == "On"));
+
+                // Every destination must be part of the shipped layer, and nothing it reaches may
+                // still be one of the source files' objects.
+                var members = index < 0 ? new HashSet<UnityEngine.Object>() : LayerObjects(shipped.layers[index].stateMachine);
+                var dangling = members.OfType<AnimatorTransitionBase>()
+                    .Where(t => (t.destinationState != null && !members.Contains(t.destinationState)) ||
+                                (t.destinationStateMachine != null && !members.Contains(t.destinationStateMachine)))
+                    .Select(t => t.destinationState != null ? (UnityEngine.Object)t.destinationState : t.destinationStateMachine)
+                    .ToList();
+                var leftBehind = members.Where(x => files.Contains(AssetDatabase.GetAssetPath(x))).ToList();
+
+                string round = "not driven";
+                bool roundTrip = false;
+                if (index >= 0)
+                {
+                    var animator = root.GetComponent<Animator>();
+                    animator.runtimeAnimatorController = shipped;
+                    animator.Rebind();
+                    animator.Update(0f);
+                    string Now()
+                    {
+                        int hash = animator.GetCurrentAnimatorStateInfo(index).shortNameHash;
+                        return hash == Animator.StringToHash("On") ? "On" : hash == Animator.StringToHash("Off") ? "Off" : "?";
+                    }
+                    for (int f = 0; f < 10; f++) animator.Update(1f / 60f);
+                    string start = Now();
+                    animator.SetBool("Toggle", true);
+                    for (int f = 0; f < 30; f++) animator.Update(1f / 60f);
+                    string onNow = Now();
+                    animator.SetBool("Toggle", false);
+                    for (int f = 0; f < 30; f++) animator.Update(1f / 60f);
+                    string offNow = Now();
+                    round = $"{start} -> {onNow} -> {offNow}";
+                    roundTrip = start == "Off" && onNow == "On" && offNow == "Off";
+                    animator.runtimeAnimatorController = null;
+                }
+
+                var changed = files.Where(p => !File.ReadAllBytes(p).SequenceEqual(before[p])).ToList();
+                Check(ok && index >= 0 && dangling.Count == 0 && leftBehind.Count == 0 && roundTrip &&
+                      changed.Count == 0,
+                      "fx/cut-layer-keeps-its-transitions",
+                      thrown != null ? "the build threw: " + thrown
+                      : !ok ? "the build was refused"
+                      : index < 0 ? "the shipped FX has no layer holding On"
+                      : dangling.Count > 0 ? "a shipped transition targets something outside its layer: " +
+                                             string.Join(", ", dangling.Select(x => x.name + " in " + AssetDatabase.GetAssetPath(x)))
+                      : leftBehind.Count > 0 ? "the shipped layer still reaches source objects: " +
+                                               string.Join(", ", leftBehind.Select(x => x.GetType().Name + " " + x.name))
+                      : !roundTrip ? "driven with an Animator the toggle went " + round
+                      : changed.Count > 0 ? "source files changed: " + string.Join(", ", changed)
+                      : "every transition stays inside its layer and the toggle goes " + round);
+            }
+            finally
+            {
+                if (root != null) UnityEngine.Object.DestroyImmediate(root);
+                foreach (var mpbuild in new[] { MeshProtectShaderGen.OutputRoot(null) + "/_MeshProtectBuild",
+                                               "Assets/_MeshProtectBuild" })
+                    if (AssetDatabase.IsValidFolder(mpbuild)) AssetDatabase.DeleteAsset(mpbuild);
+                foreach (var a in new[] { fxPath, nextPath, offPath, onPath })
+                    AssetDatabase.DeleteAsset(a);
+            }
+        }
+
+        /// <summary>Every state machine, state, transition and behaviour a layer reaches.</summary>
+        private static HashSet<UnityEngine.Object> LayerObjects(AnimatorStateMachine machine)
+        {
+            var found = new HashSet<UnityEngine.Object>();
+            void Walk(AnimatorStateMachine m)
+            {
+                if (m == null || !found.Add(m)) return;
+                foreach (var b in m.behaviours) found.Add(b);
+                foreach (var t in m.anyStateTransitions) found.Add(t);
+                foreach (var t in m.entryTransitions) found.Add(t);
+                foreach (var c in m.states)
+                {
+                    if (c.state == null) continue;
+                    found.Add(c.state);
+                    foreach (var t in c.state.transitions) found.Add(t);
+                    foreach (var b in c.state.behaviours) found.Add(b);
+                }
+                foreach (var c in m.stateMachines)
+                {
+                    foreach (var t in m.GetStateMachineTransitions(c.stateMachine)) found.Add(t);
+                    Walk(c.stateMachine);
+                }
+            }
+            Walk(machine);
+            return found;
+        }
+
+        /// <summary>A layer's structure as text, motions left out.</summary>
+        private static string LayerGraph(AnimatorStateMachine machine)
+        {
+            string To(AnimatorTransitionBase t) =>
+                (t.destinationState != null ? "s:" + t.destinationState.name
+                 : t.destinationStateMachine != null ? "m:" + t.destinationStateMachine.name
+                 : t.isExit ? "exit" : "-") +
+                "(" + string.Join("&", t.conditions.Select(c => $"{c.parameter}{c.mode}{c.threshold}")) + ")";
+            string Behaviours(StateMachineBehaviour[] list) => string.Join(",", list.Select(b =>
+                b is VRCAvatarParameterDriver d
+                    ? "driver(" + string.Join(";", d.parameters.Select(p => $"{p.name}{p.type}{p.value}")) + ")"
+                    : b.GetType().Name));
+
+            var text = new StringBuilder();
+            void Walk(AnimatorStateMachine m)
+            {
+                text.Append($"[{m.name} d={m.defaultState?.name} b={Behaviours(m.behaviours)}");
+                foreach (var t in m.anyStateTransitions) text.Append(" any>" + To(t));
+                foreach (var t in m.entryTransitions) text.Append(" entry>" + To(t));
+                foreach (var c in m.states)
+                {
+                    text.Append($" {{{c.state.name} b={Behaviours(c.state.behaviours)}");
+                    foreach (var t in c.state.transitions) text.Append($" >{To(t)}{t.hasExitTime}{t.duration}");
+                    text.Append("}");
+                }
+                foreach (var c in m.stateMachines)
+                {
+                    foreach (var t in m.GetStateMachineTransitions(c.stateMachine))
+                        text.Append($" {c.stateMachine.name}>{To(t)}");
+                    Walk(c.stateMachine);
+                }
+                text.Append("]");
+            }
+            Walk(machine);
+            return text.ToString();
+        }
+
         private static GameObject BuildMinimalAvatar(Shader lilToon, string name, int seed,
                                                      out Renderer renderer, out MeshProtectRoot settings)
         {
@@ -2388,6 +2804,216 @@ namespace MPTest
                 foreach (var mpbuild in new[] { MeshProtectShaderGen.OutputRoot(null) + "/_MeshProtectBuild",
                                                "Assets/_MeshProtectBuild" })
                     if (AssetDatabase.IsValidFolder(mpbuild)) AssetDatabase.DeleteAsset(mpbuild);
+            }
+        }
+
+        /// <summary>
+        /// A full page that already ends in More pages, the way Modular Avatar leaves every menu it
+        /// splits. The entry goes at the end of that chain. Making a More of our own moved the
+        /// author's More - and every entry behind it - a level down, which a user reported along
+        /// with the workaround of typing the page's name as the parent menu path. "chain" is two
+        /// More pages deep; "full-end" ends on a page with no room, where the overflow rule still
+        /// moves one control. <paramref name="pages"/> is the author's entries per page; every page
+        /// but the last ends in a More.
+        /// </summary>
+        private static void TestFullRootMenuEndingInMore(Shader lilToon, string label, int[] pages)
+        {
+            GameObject root = null;
+            const string dir = "Assets/_MPTestScratch";
+            var paths = new List<string>();
+            string paramsPath = $"{dir}/MoreParams_{label}.asset";
+            try
+            {
+                root = BuildMinimalAvatar(lilToon, "MoreAvatar_" + label, 4718, out _, out _);
+                if (!AssetDatabase.IsValidFolder(dir)) AssetDatabase.CreateFolder("Assets", "_MPTestScratch");
+
+                int total = pages.Sum();
+                VRCExpressionsMenu.Control Toggle(int i) => new VRCExpressionsMenu.Control
+                {
+                    name = "Own" + i, type = VRCExpressionsMenu.Control.ControlType.Toggle,
+                    parameter = new VRCExpressionsMenu.Control.Parameter { name = "OwnToggle" + i }
+                };
+
+                // Built from the last page back, so each page can end in a More to the next.
+                var expected = new int[total];
+                VRCExpressionsMenu next = null;
+                int first = total;
+                for (int p = pages.Length - 1; p >= 0; p--)
+                {
+                    first -= pages[p];
+                    var menu = ScriptableObject.CreateInstance<VRCExpressionsMenu>();
+                    menu.controls = Enumerable.Range(first, pages[p]).Select(Toggle).ToList();
+                    for (int i = first; i < first + pages[p]; i++) expected[i] = p;
+                    if (next != null)
+                        menu.controls.Add(new VRCExpressionsMenu.Control
+                        {
+                            name = "More", type = VRCExpressionsMenu.Control.ControlType.SubMenu, subMenu = next,
+                            parameter = new VRCExpressionsMenu.Control.Parameter { name = "" }
+                        });
+                    string pagePath = $"{dir}/More_{label}_{p}.asset";
+                    AssetDatabase.CreateAsset(menu, pagePath);
+                    paths.Add(pagePath);
+                    next = menu;
+                }
+
+                // A last page with no room moves its last entry one level further down, with Unlock.
+                int lastPage = pages.Length - 1;
+                bool fullEnd = pages[lastPage] >= 8;
+                if (fullEnd) expected[total - 1] = lastPage + 1;
+                int unlockExpected = fullEnd ? lastPage + 1 : lastPage;
+
+                var parameters = ScriptableObject.CreateInstance<VRCExpressionParameters>();
+                parameters.parameters = Enumerable.Range(0, total).Select(i => new VRCExpressionParameters.Parameter
+                {
+                    name = "OwnToggle" + i, valueType = VRCExpressionParameters.ValueType.Bool,
+                    saved = true, networkSynced = true
+                }).ToArray();
+                AssetDatabase.CreateAsset(parameters, paramsPath);
+                AssetDatabase.SaveAssets();
+
+                var descriptor = root.GetComponent<VRCAvatarDescriptor>();
+                descriptor.customExpressions = true;
+                descriptor.expressionsMenu = next;
+                descriptor.expressionParameters = parameters;
+                var before = paths.ToDictionary(p => p, p => File.ReadAllBytes(p));
+
+                bool ok;
+                try { ok = new MeshProtectBuildHook().OnPreprocessAvatar(root); }
+                catch (Exception e) { ok = false; Say($"      menu/ends-in-more-{label}: hook threw - " + e.Message); }
+                AssetDatabase.SaveAssets();
+
+                var shipped = descriptor.expressionsMenu;
+                int unlock = UnlockDepth(shipped, new HashSet<VRCExpressionsMenu>(), 0);
+                var depths = Enumerable.Range(0, total)
+                    .Select(i => ControlDepth(shipped, new HashSet<VRCExpressionsMenu>(), 0, "Own" + i)).ToArray();
+                bool ownStay = depths.SequenceEqual(expected);
+                var over = AllMenus(shipped, new HashSet<VRCExpressionsMenu>())
+                    .Where(m => m.controls != null && m.controls.Count > 8).Select(m => m.name).ToList();
+                var changed = paths.Where(p => !File.ReadAllBytes(p).SequenceEqual(before[p])).ToList();
+
+                Check(ok && unlock == unlockExpected && ownStay && over.Count == 0 && changed.Count == 0,
+                      "menu/ends-in-more-" + label,
+                      !ok ? "the build was refused"
+                      : unlock != unlockExpected ? $"the unlock entry is {unlock} level(s) deep, expected {unlockExpected}"
+                      : !ownStay ? $"the author's entries moved: depths {string.Join(",", depths)}, expected {string.Join(",", expected)}"
+                      : over.Count > 0 ? "a menu exceeds eight controls: " + string.Join(", ", over)
+                      : changed.Count > 0 ? "source menus changed: " + string.Join(", ", changed)
+                      : $"the entry is at the end of the More chain ({unlock} level(s) down) and the author's entries stayed put");
+            }
+            finally
+            {
+                if (root != null) UnityEngine.Object.DestroyImmediate(root);
+                foreach (var mpbuild in new[] { MeshProtectShaderGen.OutputRoot(null) + "/_MeshProtectBuild",
+                                               "Assets/_MeshProtectBuild" })
+                    if (AssetDatabase.IsValidFolder(mpbuild)) AssetDatabase.DeleteAsset(mpbuild);
+                foreach (var a in paths.Concat(new[] { paramsPath }))
+                    AssetDatabase.DeleteAsset(a);
+            }
+        }
+
+        /// <summary>
+        /// An override controller over a base that keeps its clip inside its own file, with the
+        /// state playing that clip in a layer stored in another file. When the layer is copied in,
+        /// the state must go on playing the clip the override is keyed by: pointing it at the
+        /// copy's twin of the clip leaves the author's override behind, and the avatar plays the
+        /// base clip with nothing said.
+        /// </summary>
+        private static void TestOverrideWithLayerInAnotherFile(Shader lilToon)
+        {
+            GameObject root = null;
+            const string dir = "Assets/_MPTestScratch";
+            string basePath = dir + "/OvrSplitBase.controller";
+            string elsewherePath = dir + "/OvrSplitElsewhere.controller";
+            string replacementPath = dir + "/OvrSplitReplacement.anim";
+            string overPath = dir + "/OvrSplit.overrideController";
+            try
+            {
+                root = BuildMinimalAvatar(lilToon, "OvrSplitAvatar", 4719, out _, out var settings);
+                settings.obfuscateAnimatorNames = false;
+                if (!AssetDatabase.IsValidFolder(dir)) AssetDatabase.CreateFolder("Assets", "_MPTestScratch");
+
+                var baseController = AnimatorController.CreateAnimatorControllerAtPath(basePath);
+                baseController.AddParameter("Go", AnimatorControllerParameterType.Bool);
+                var embedded = new AnimationClip { name = "OvrSplitEmbedded" };
+                AnimationUtility.SetEditorCurve(embedded,
+                    EditorCurveBinding.FloatCurve("Body", typeof(Transform), "m_LocalScale.y"),
+                    AnimationCurve.Constant(0f, 0f, 1f));
+                AssetDatabase.AddObjectToAsset(embedded, baseController);
+
+                var elsewhere = AnimatorController.CreateAnimatorControllerAtPath(elsewherePath);
+                var machine = new AnimatorStateMachine { name = "OvrSplitLayer", hideFlags = HideFlags.HideInHierarchy };
+                AssetDatabase.AddObjectToAsset(machine, elsewhere);
+                var idle = machine.AddState("Idle");
+                var playing = machine.AddState("Playing");
+                playing.motion = embedded;
+                machine.defaultState = idle;
+                idle.AddTransition(playing).AddCondition(AnimatorConditionMode.If, 0, "Go");
+                baseController.AddLayer(new AnimatorControllerLayer
+                    { name = "OvrSplitLayer", stateMachine = machine, defaultWeight = 1f });
+
+                var replacement = new AnimationClip { name = "OvrSplitReplacement" };
+                AssetDatabase.CreateAsset(replacement, replacementPath);
+                var over = new AnimatorOverrideController(baseController) { name = "OvrSplit" };
+                over[embedded] = replacement;
+                AssetDatabase.CreateAsset(over, overPath);
+                AssetDatabase.SaveAssets();
+
+                var descriptor = root.GetComponent<VRCAvatarDescriptor>();
+                descriptor.customizeAnimationLayers = true;
+                descriptor.baseAnimationLayers = new[]
+                {
+                    new VRCAvatarDescriptor.CustomAnimLayer
+                        { type = VRCAvatarDescriptor.AnimLayerType.FX, isDefault = false, animatorController = over }
+                };
+                var files = new[] { basePath, elsewherePath, replacementPath, overPath };
+                var before = files.ToDictionary(p => p, p => File.ReadAllBytes(p));
+
+                bool ok;
+                string thrown = null;
+                try { ok = new MeshProtectBuildHook().OnPreprocessAvatar(root); }
+                catch (Exception e) { ok = false; thrown = e.Message; }
+                AssetDatabase.SaveAssets();
+
+                var finalRuntime = descriptor.baseAnimationLayers
+                    .Where(l => l.type == VRCAvatarDescriptor.AnimLayerType.FX)
+                    .Select(l => l.animatorController).FirstOrDefault();
+                var resolved = finalRuntime;
+                while (resolved is AnimatorOverrideController o) resolved = o.runtimeAnimatorController;
+                var shippedBase = resolved as AnimatorController;
+
+                var layer = shippedBase?.layers.FirstOrDefault(l => l.stateMachine != null && l.stateMachine.name == "OvrSplitLayer");
+                var shippedPlaying = layer?.stateMachine.states.Select(c => c.state).FirstOrDefault(s => s.name == "Playing");
+                bool movedIn = shippedPlaying != null &&
+                               AssetDatabase.GetAssetPath(shippedPlaying) == AssetDatabase.GetAssetPath(shippedBase);
+
+                AnimationClip playsAs = null;
+                if (finalRuntime is AnimatorOverrideController finalOver && shippedPlaying?.motion is AnimationClip key)
+                {
+                    var map = new List<KeyValuePair<AnimationClip, AnimationClip>>();
+                    finalOver.GetOverrides(map);
+                    playsAs = map.Where(m => m.Key == key).Select(m => m.Value).FirstOrDefault();
+                }
+                var changed = files.Where(p => !File.ReadAllBytes(p).SequenceEqual(before[p])).ToList();
+
+                Check(ok && movedIn && playsAs == replacement && changed.Count == 0,
+                      "override/layer-in-another-file",
+                      thrown != null ? "the build threw: " + thrown
+                      : !ok ? "the build was refused"
+                      : shippedPlaying == null ? "the shipped base has no OvrSplitLayer with its Playing state"
+                      : !movedIn ? "the layer from the other file was not copied in"
+                      : playsAs != replacement ? $"the moved-in state plays '{(shippedPlaying.motion == null ? "<none>" : shippedPlaying.motion.name)}', " +
+                                                 $"which the shipped override maps to '{(playsAs == null ? "<nothing>" : playsAs.name)}' instead of the author's replacement"
+                      : changed.Count > 0 ? "source files changed: " + string.Join(", ", changed)
+                      : "the moved-in state still plays the overridden clip, so the author's override applies");
+            }
+            finally
+            {
+                if (root != null) UnityEngine.Object.DestroyImmediate(root);
+                foreach (var mpbuild in new[] { MeshProtectShaderGen.OutputRoot(null) + "/_MeshProtectBuild",
+                                               "Assets/_MeshProtectBuild" })
+                    if (AssetDatabase.IsValidFolder(mpbuild)) AssetDatabase.DeleteAsset(mpbuild);
+                foreach (var a in new[] { overPath, replacementPath, elsewherePath, basePath })
+                    AssetDatabase.DeleteAsset(a);
             }
         }
 

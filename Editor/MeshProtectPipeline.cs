@@ -639,6 +639,15 @@ namespace MeshProtect
                         "its name; the report on the component says which and why.");
             }
 
+            // After every pass that names things, so names come out exactly as before; before the
+            // swap rewrite, which writes to the states it re-points.
+            int completed = MeshProtectAnimator.CompleteFxCopy();
+            if (completed > 0)
+                report.warnings.Add(
+                    $"Copied {completed} animator object(s) that the FX controller kept in other " +
+                    "files into this upload's copy, so its layers are complete. Nothing outside this " +
+                    "build was changed.");
+
             // Last, after every pass that clones or renames clips, so it reads the clips this
             // build actually ships and the paths they actually bind.
             RewriteAnimatedMaterialSwaps(avatar, settings, plan, materialCache, variant, mac,
@@ -1127,12 +1136,13 @@ namespace MeshProtect
                         if (state == null) continue;
                         var replacement = RewriteMotion(state.motion);
                         if (replacement == state.motion) continue;
+                        // Not expected since the FX copy brings its layers inside; kept so a state
+                        // that is still shared is never written to.
                         if (!BuildOwns(state))
                             throw new InvalidOperationException(
-                                $"FX state '{state.name}' lives outside this build's controller copy. " +
-                                "Its material swap needs a different motion, but changing the shared " +
-                                "state would modify your project. Store the state in its controller " +
-                                "before uploading.");
+                                $"FX state '{state.name}' is still outside this build's controller " +
+                                "copy, so its material swap cannot be re-pointed without changing the " +
+                                "original. The upload was stopped.");
                         state.motion = replacement;
                         EditorUtility.SetDirty(state);
                     }

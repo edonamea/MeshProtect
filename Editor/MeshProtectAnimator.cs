@@ -363,6 +363,8 @@ namespace MeshProtect
             // One build, one empty clip; the field would otherwise hold a destroyed asset from the
             // previous build's temporary folder.
             emptyClip = null;
+            fxCopy = null;
+            fxCopySource = null;
 
             var parameters = CloneOrCreateParameters(descriptor, variant, folder);
             var rootMenu = CloneOrCreateMenu(descriptor, variant, folder);
@@ -685,7 +687,8 @@ namespace MeshProtect
 
         /// <summary>
         /// Resolve the parent against the final menu tree and copy the branch we edit. Automatic
-        /// placement keeps the original overflow behaviour; an explicit slot stays on that page.
+        /// placement follows a full page's trailing More pages to the last one and keeps the
+        /// original overflow behaviour there; an explicit slot stays on that page.
         /// </summary>
         private static VRCExpressionsMenu AttachSubMenu(VRCExpressionsMenu rootMenu,
                                                         VRCExpressionsMenu keyMenu,
@@ -729,12 +732,45 @@ namespace MeshProtect
 
             // Display labels belong to the author; an existing "Unlock" is not our control.
             int position = Mathf.Clamp(settings.unlockMenuPosition, 0, MenuControlLimit);
+
+            // A full page that already ends in a More page - Modular Avatar ends every page it
+            // splits with one - takes the entry at the end of that chain. A More of our own there
+            // would push the author's whole More page a level down.
+            int down = 0;
+            if (position == 0)
+            {
+                var walked = new HashSet<VRCExpressionsMenu>();
+                while (targetMenu.controls.Count >= MenuControlLimit)
+                {
+                    var last = targetMenu.controls[targetMenu.controls.Count - 1];
+                    if (last == null || last.type != VRCExpressionsMenu.Control.ControlType.SubMenu ||
+                        last.subMenu == null ||
+                        MeshProtectMenuPath.MatchIndices(new[] { last.name }, OverflowControlName).Length == 0 ||
+                        !walked.Add(last.subMenu))
+                        break;
+
+                    var page = CopyMenu(last.subMenu, variant.rootMenuAssetName + "_m" + ++down, folder);
+                    last.subMenu = page;
+                    EditorUtility.SetDirty(targetMenu);
+                    targetMenu = page;
+                }
+            }
+            string where = down == 0
+                ? "The selected expression menu"
+                : $"The '{OverflowControlName}' page {down} level(s) below the selected expression menu";
+
             if (targetMenu.controls.Count < MenuControlLimit)
             {
                 int index = position == 0 ? targetMenu.controls.Count
                     : Mathf.Min(position - 1, targetMenu.controls.Count);
                 targetMenu.controls.Insert(index, unlock);
                 EditorUtility.SetDirty(targetMenu);
+                if (down > 0)
+                    Debug.LogWarning(
+                        $"[MeshProtect] The selected expression menu was full and ends in " +
+                        $"'{OverflowControlName}', so '{unlock.name}' was added to the " +
+                        $"'{OverflowControlName}' page {down} level(s) below it. Only this build's " +
+                        "menu copies were changed.");
                 return rootMenu;
             }
 
@@ -761,7 +797,7 @@ namespace MeshProtect
             EditorUtility.SetDirty(targetMenu);
 
             Debug.LogWarning(
-                $"[MeshProtect] The selected expression menu was full. Its last " +
+                $"[MeshProtect] {where} was full. Its last " +
                 $"{MenuControlLimit - keep} original control(s) moved into '{OverflowControlName}'. " +
                 (position == 0 ? $"'{unlock.name}' is in that page too. "
                                : $"'{unlock.name}' occupies position {position}. ") +
@@ -1199,6 +1235,30 @@ namespace MeshProtect
 
         private static AnimationClip emptyClip;
 
+        /// <summary>The FX copy this build made and the file it was copied from, for CompleteFxCopy.</summary>
+        private static AnimatorController fxCopy;
+        private static string fxCopySource;
+
+        /// <summary>
+        /// Bring into this build's FX copy the parts of its layers that CopyOutOfItsFile left in
+        /// other files. Returns how many objects were copied.
+        ///
+        /// Called after every pass that names things, not when the copy is made. Those passes
+        /// treat a controller whose layers live elsewhere as someone else's and leave its names
+        /// alone; copying the layers in first would hand them every parameter and object an NDMF
+        /// avatar animates, and a name that changes resets saved values and breaks OSC for everyone
+        /// who updates. So names come out exactly as before, and only the structure is completed -
+        /// before the swap rewrite, which has to write to the states it re-points.
+        /// </summary>
+        internal static int CompleteFxCopy()
+        {
+            var copy = fxCopy;
+            string source = fxCopySource;
+            fxCopy = null;
+            fxCopySource = null;
+            return copy == null ? 0 : BringStructureInside(source, copy);
+        }
+
         /// <summary>
         /// Our states use whatever the avatar already uses. Read this before changing it back.
         ///
@@ -1333,8 +1393,9 @@ namespace MeshProtect
         /// real avatar: 455 controls in the tree became 68, and the wearer's menu was replaced by
         /// the "tail" submenu.
         ///
-        /// Copying the control list sidesteps the file entirely. The controls themselves are shared
-        /// with the original, which is safe because only this list is ever added to.
+        /// Copying the object sidesteps the file entirely. Instantiate copies its controls as
+        /// well, so AttachSubMenu may re-point a copied control's submenu without touching the
+        /// author's.
         /// </summary>
         private static VRCExpressionsMenu CloneOrCreateMenu(VRCAvatarDescriptor descriptor,
                                                             MeshProtectVariant variant, string folder)
@@ -1386,6 +1447,8 @@ namespace MeshProtect
                     "controller in memory, saving the avatar's setup to disk before uploading gives " +
                     "this something to copy.");
 
+            fxCopy = copy;
+            fxCopySource = AssetDatabase.GetAssetPath(source);
             return copy;
         }
 
@@ -1553,6 +1616,151 @@ namespace MeshProtect
                 $"[MeshProtect] Copying '{sourcePath}' produced no object with the local file ID " +
                 $"of '{source.name}', so the copy cannot be used.");
             return null;
+        }
+
+        /// <summary>
+        /// Copy into the FX copy every state machine, state, transition and behaviour its layers
+        /// reach in another file, and point everything at the copies. Returns how many objects
+        /// were copied; a controller kept in one file gives 0 and is not touched.
+        ///
+        /// CopyOutOfItsFile copies ONE file, and NDMF saves what it generates 256 objects to a
+        /// file, so on a large avatar the FX controller and parts of its own layers land in
+        /// different files - a layer can be cut in two. Measured on 1.3.0 with a toggle layer cut
+        /// that way: the copy's On -> Off transition, stored in the second file, still pointed at
+        /// the ORIGINAL Off, which is not in the copied layer, so the toggle turned on and never
+        /// came back. And a material swap in a layer stored elsewhere stopped the build, because
+        /// the state that plays it could not be written to.
+        ///
+        /// So a reference into the copied file is resolved to its twin in the copy (a byte copy
+        /// keeps local file IDs), everything else outside the copy is copied into it, and one pass
+        /// re-points every reference held by the copy, its own objects and the new copies: layers,
+        /// child lists, default states, every kind of transition, behaviours, and the override
+        /// tables of synced layers. The originals are only read. Motions stay where they are; the
+        /// passes that change one copy it first.
+        /// </summary>
+        private static int BringStructureInside(string sourcePath, AnimatorController copy)
+        {
+            string copyPath = AssetDatabase.GetAssetPath(copy);
+            if (string.IsNullOrEmpty(copyPath)) return 0;
+
+            var map = new Dictionary<Object, Object>();
+            Dictionary<long, Object> twins = null;
+
+            // The copy's objects by local file ID, read before anything is added to it.
+            void LoadTwins()
+            {
+                if (twins != null) return;
+                twins = new Dictionary<long, Object>();
+                foreach (var candidate in AssetDatabase.LoadAllAssetsAtPath(copyPath))
+                    if (candidate != null &&
+                        AssetDatabase.TryGetGUIDAndLocalFileIdentifier(candidate, out _, out long id))
+                        twins[id] = candidate;
+            }
+
+            // The copy's twin of a state machine, state, transition or behaviour in the copied
+            // file, or null. Only those: a motion keeps the identity it had, because the override
+            // chain was keyed by it before this runs.
+            Object Twin(Object o)
+            {
+                if (!(o is AnimatorStateMachine || o is AnimatorState || o is AnimatorTransitionBase ||
+                      o is StateMachineBehaviour)) return null;
+                if (string.IsNullOrEmpty(sourcePath) || sourcePath == copyPath ||
+                    AssetDatabase.GetAssetPath(o) != sourcePath) return null;
+                LoadTwins();
+                return AssetDatabase.TryGetGUIDAndLocalFileIdentifier(o, out _, out long wanted) &&
+                       twins.TryGetValue(wanted, out var twin) && twin.GetType() == o.GetType()
+                    ? twin : null;
+            }
+
+            // Child lists only; a transition's destination is re-pointed, not followed.
+            var reached = new List<Object>();
+            var seen = new HashSet<Object>();
+            void Visit(Object o)
+            {
+                if (o == null) return;
+                o = Twin(o) ?? o;
+                if (!seen.Add(o)) return;
+                reached.Add(o);
+
+                if (o is AnimatorStateMachine machine)
+                {
+                    foreach (var behaviour in machine.behaviours) Visit(behaviour);
+                    foreach (var transition in machine.anyStateTransitions) Visit(transition);
+                    foreach (var transition in machine.entryTransitions) Visit(transition);
+                    foreach (var child in machine.states) Visit(child.state);
+                    foreach (var child in machine.stateMachines)
+                    {
+                        foreach (var transition in machine.GetStateMachineTransitions(child.stateMachine))
+                            Visit(transition);
+                        Visit(child.stateMachine);
+                    }
+                }
+                else if (o is AnimatorState state)
+                {
+                    foreach (var transition in state.transitions) Visit(transition);
+                    foreach (var behaviour in state.behaviours) Visit(behaviour);
+                }
+            }
+
+            var layers = copy.layers;
+            foreach (var layer in layers) Visit(layer.stateMachine);
+            var states = reached.OfType<AnimatorState>().ToList();
+            foreach (var layer in layers)
+                if (layer.syncedLayerIndex >= 0)
+                    foreach (var state in states)
+                        foreach (var behaviour in layer.GetOverrideBehaviours(state) ?? new StateMachineBehaviour[0])
+                            Visit(behaviour);
+
+            if (reached.All(o => AssetDatabase.GetAssetPath(o) == copyPath)) return 0;
+            if (!string.IsNullOrEmpty(sourcePath) && sourcePath != copyPath) LoadTwins();
+
+            var targets = new List<Object> { copy };
+            foreach (var original in reached)
+            {
+                if (AssetDatabase.GetAssetPath(original) == copyPath) { targets.Add(original); continue; }
+
+                Object clone;
+                switch (original)
+                {
+                    case AnimatorStateMachine _: clone = new AnimatorStateMachine(); break;
+                    case AnimatorState _: clone = new AnimatorState(); break;
+                    case AnimatorStateTransition _: clone = new AnimatorStateTransition(); break;
+                    case AnimatorTransition _: clone = new AnimatorTransition(); break;
+                    case StateMachineBehaviour behaviour:
+                        clone = ScriptableObject.CreateInstance(behaviour.GetType()); break;
+                    default: continue;
+                }
+
+                // CopySerialized, not Instantiate: these objects own the ones they list, and
+                // Instantiate asserts on owning references (see CopySeparateBlendTrees).
+                EditorUtility.CopySerialized(original, clone);
+                clone.name = original.name;
+                clone.hideFlags = (original.hideFlags | HideFlags.HideInHierarchy) & ~HideFlags.DontSave;
+                AssetDatabase.AddObjectToAsset(clone, copy);
+                map[original] = clone;
+                targets.Add(clone);
+            }
+            if (map.Count == 0) return 0;
+
+            foreach (var target in targets)
+            {
+                var serialized = new SerializedObject(target);
+                var property = serialized.GetIterator();
+                bool changed = false;
+                while (property.Next(true))
+                {
+                    if (property.propertyType != SerializedPropertyType.ObjectReference) continue;
+                    var value = property.objectReferenceValue;
+                    if (value == null) continue;
+                    var replacement = map.TryGetValue(value, out var cloned) ? cloned : Twin(value);
+                    if (replacement == null || replacement == value) continue;
+                    property.objectReferenceValue = replacement;
+                    changed = true;
+                }
+                if (changed) serialized.ApplyModifiedPropertiesWithoutUndo();
+            }
+
+            return map.Count;
         }
 
         /// <summary>

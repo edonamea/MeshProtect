@@ -263,8 +263,9 @@ Anti-clip shells on blackbody no longer belong here — that family is grafted a
   VRCFury above all, invalidate the stored maps — the build falls back to a fresh survey and
   renames whatever its own FX copy fully accounts for, keeping the rest by name.
 - **A full root menu costs one control one level, not the whole menu.** When there is no slot left,
-  the last control moves into a `More` page and the unlock entry joins it there. Only the upload is
-  affected; the menu in your project is untouched.
+  the last control moves into a `More` page and the unlock entry joins it there. A page that already
+  ends in a `More` page, as Modular Avatar leaves the pages it splits, gets the entry at the end of
+  that chain instead. Only the upload is affected; the menu in your project is untouched.
 - **Blend trees saved as their own `.asset`** are copied into the protected controller rather than
   written to. On the avatar this was measured against, 320 trees were stored that way and blocked
   43 parameters on their own.
